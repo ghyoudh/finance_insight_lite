@@ -1,27 +1,57 @@
 import gradio as gr
+import os
+import base64
+
+def get_base64_img(img_path):
+    try:
+        with open(img_path, "rb") as image_file:
+            return base64.b64encode(image_file.read()).decode('utf-8')
+    except Exception as e:
+        print(f"Error loading image: {e}")
+        return ""
+
 
 def launch_ui(process_fn, chat_fn):
-    """
-    Finance Insight Lite - UI Module
-    This function defines the layout and connects to the backend logic.
-    """
+    #load and encode the logo image
+    img_data = get_base64_img("images/logo.png")
     
-    # Define the theme separately to avoid constructor warnings in new Gradio versions
-    custom_theme = gr.themes.Soft(
-        primary_hue="emerald",
-        neutral_hue="slate",
-    )
-
+    custom_theme = gr.themes.Soft(primary_hue="emerald", neutral_hue="slate")
+    
     with gr.Blocks(title="Finance Insight Lite") as demo:
-        # Professional App Header
+        # --- Header Section ---
         gr.HTML(
-            """
-            <div style='text-align: center; padding: 15px;'>
-                <h1 style='color: #10b981; margin: 0;'>📊 Finance Insight Lite</h1>
-                <p style='color: #64748b; font-size: 1.1em;'>Corporate Financial Intelligence Engine</p>
-            </div>
-            """
-        )
+            f"""
+    <div style='text-align: left; padding: 20px 0; display: flex; align-items: center; gap: 25px;'>
+        <div style='width: 130px; 
+                    height: 130px; 
+                    border-radius: 50%; 
+                    overflow: hidden; 
+                    border: 4px solid #FFD700; 
+                    box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+                    display: flex; 
+                    align-items: center; 
+                    justify-content: center;'>
+            
+            <img src='data:image/png;base64,{img_data}' 
+                 style='width: 100%; 
+                        height: 100%; 
+                        object-fit: cover; 
+                        transform: scale(1.4); 
+                        transform-origin: center;'>
+        </div>
+        
+        <div>
+            <h1 style='color: #10b981; margin: 0; font-size: 3em; font-weight: 800; font-family: sans-serif;'>
+                Finance Insight Lite
+            </h1>
+            <p style='color: #64748b; font-size: 1.4em; margin: 5px 0 0 0; font-family: sans-serif;'>
+                Corporate Financial Intelligence Engine
+            </p>
+        </div>
+    </div>
+    """
+)
+        
         
         with gr.Row():
             # Control Panel (Left)
@@ -29,18 +59,39 @@ def launch_ui(process_fn, chat_fn):
                 gr.Markdown("### 🛠️ **Command Center**")
                 file_input = gr.File(label="Upload Financial Report (PDF)", file_types=[".pdf"])
                 process_btn = gr.Button("INITIALIZE ANALYSIS", variant="primary")
-                status_output = gr.Textbox(label="System Status", interactive=False)
+                status_output = gr.Markdown("", label="Status")
+
                 
+
                 gr.Markdown("---")
-                gr.Markdown("### 💡 **Quick Queries**")
+                gr.Markdown("""
+                **Agent Instructions:**
+                1. Upload the annual report.
+                2. Wait for system initialization.
+                3. Ask specific financial questions in the chat.
+                """)
                 
-                # Chat input placed here for better UX in Example selection
-                msg_input = gr.Textbox(
-                    label="Input Query", 
-                    placeholder="Ask about financial metrics...",
-                    show_label=True
+               
+
+           # Right Panel: Chat Interface (Cleaner)
+            with gr.Column(scale=2):
+                # Chatbot component now includes the input bar inside it in newer Gradio versions
+                # Or we place it immediately below for better control
+                chatbot = gr.Chatbot(
+                    label="AI Terminal", 
+                    height=550, 
                 )
                 
+                with gr.Row():
+                    msg_input = gr.Textbox(
+                        label=None,
+                        placeholder="Type your financial query here...",
+                        show_label=False,
+                        scale=4
+                    )
+                    submit_btn = gr.Button("Send", variant="primary", scale=1)
+
+                # Examples moved under the chat input for a cleaner look
                 gr.Examples(
                     examples=[
                         "Summarize the key financial highlights.",
@@ -48,13 +99,9 @@ def launch_ui(process_fn, chat_fn):
                         "Extract the dividend policy details.",
                         "Analyze the net income trends."
                     ],
-                    inputs=msg_input
+                    inputs=msg_input,
+                    label="Suggested Queries"
                 )
-
-            # Chat Interface (Right)
-            with gr.Column(scale=2):
-                chatbot = gr.Chatbot(label="Bayan AI Terminal", height=600)
-                submit_btn = gr.Button("SEND QUERY", variant="primary")
 
         # --- Event Logic ---
         def handle_upload(file):
@@ -85,5 +132,18 @@ def launch_ui(process_fn, chat_fn):
     demo.launch(
         theme=custom_theme,
         share=True,
-        server_name="0.0.0.0"
+        server_name="0.0.0.0",
+        inline=False,
+        allowed_paths=[os.path.abspath("images")]
     )
+
+
+if __name__ == "__main__":
+    # For standalone testing purposes
+    def dummy_process(file_path):
+        return "✅ File processed successfully."
+
+    def dummy_chat(message):
+        return {"answer": f"Echo: {message}"}
+
+    launch_ui(dummy_process, dummy_chat)
