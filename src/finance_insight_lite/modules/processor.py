@@ -1,22 +1,27 @@
 import fitz  # PyMuPDF
 import os
+from langchain_core.documents import Document
 
-def pdf_to_markdown(pdf_path, output_dir="data/processed"):
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
-
+def pdf_to_documents(pdf_path):
+    """
+    Load PDF and return documents with page metadata preserved
+    """
+    print(f"Loading PDF: {pdf_path}")
     doc = fitz.open(pdf_path)
-    md_text = ""
+    documents = []
 
-    for page in doc:
+    for page_num, page in enumerate(doc):
         text = page.get_text("text")
-        md_text += text + "\n\n"
+        # Create a Document with page metadata
+        document = Document(
+            page_content=text,
+            metadata={
+                "source": os.path.basename(pdf_path),
+                "page": page_num + 1  # Pages start from 1, not 0
+            }
+        )
+        documents.append(document)
 
-    file_name = os.path.basename(pdf_path).replace(".pdf", ".md")
-    save_path = os.path.join(output_dir, file_name)
+    print(f"✓ Loaded {len(documents)} pages from PDF")
 
-    with open(save_path, "w", encoding="utf-8") as f:
-        f.write(md_text)
-
-    print(f"Markdown file saved to: {save_path}")
-    return md_text
+    return documents

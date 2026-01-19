@@ -1,5 +1,6 @@
 import pathlib
-from finance_insight_lite.modules.processor import pdf_to_markdown
+import re
+from finance_insight_lite.modules.processor import pdf_to_documents
 from finance_insight_lite.modules.verctor_store import build_vector_db
 from finance_insight_lite.modules.chat_engine import get_rag_chain
 
@@ -7,6 +8,7 @@ from dotenv import load_dotenv
 import os
 from pathlib import Path
 
+# Load environment variables from .env file
 # Get the project root directory (parent of src/)
 project_root = Path(__file__).parent.parent
 env_path = project_root / '.env'
@@ -25,12 +27,13 @@ else:
 
 if __name__ == "__main__":
     pdf_file = "data/rew/saudi-aramco-q3-2025-interim-report-english.pdf"
-    content = pdf_to_markdown(pdf_file)
-    # print the first 500 characters of the extracted content
+    content = pdf_to_documents(pdf_file)
+    # print the first 300 characters of the extracted content
     print("\nPart of the extracted content:")
-    print(content[:500])
+    print(content[:300])
 
     print("-" * 30)
+    # Build or load vector database
     verctor_db_path = pathlib.Path("./data/database")
     if not verctor_db_path.exists():
         verctor_db_path.mkdir(parents=True)
@@ -38,12 +41,17 @@ if __name__ == "__main__":
     print("Vector database has been built and persisted.")
 
     print("-" * 30)
+    # Create RAG chain
     user_question = "What is the net income for Q3 2025?"
     print(f"Question: {user_question}")
 
     rag_chain = get_rag_chain(vector_db)
     response = rag_chain.invoke(user_question)
-    source_docs = response.get('context')
 
-    print("\nAI Response:")
-    print(response)
+    answer = response['answer']
+    # Display the answer
+    print("\nAI Response:\n", answer)
+    # Show source pages
+    source_docs = response['source_documents']
+    pages = sorted(set([doc.metadata.get('page', 'Unknown') for doc in source_docs]))
+    print(f"\nSource Pages: {', '.join(map(str, pages))}")
