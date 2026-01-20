@@ -3,6 +3,8 @@ import re
 from finance_insight_lite.modules.processor import pdf_to_documents
 from finance_insight_lite.modules.verctor_store import build_vector_db
 from finance_insight_lite.modules.chat_engine import get_rag_chain
+from finance_insight_lite.modules.rag_agent import create_advanced_rag_agent
+
 
 from dotenv import load_dotenv
 import os
@@ -41,17 +43,45 @@ if __name__ == "__main__":
     print("Vector database has been built and persisted.")
 
     print("-" * 30)
-    # Create RAG chain
-    user_question = "What is the net income for Q3 2025?"
-    print(f"Question: {user_question}")
-
-    rag_chain = get_rag_chain(vector_db)
-    response = rag_chain.invoke(user_question)
-
-    answer = response['answer']
-    # Display the answer
-    print("\nAI Response:\n", answer)
-    # Show source pages
-    source_docs = response['source_documents']
-    pages = sorted(set([doc.metadata.get('page', 'Unknown') for doc in source_docs]))
-    print(f"\nSource Pages: {', '.join(map(str, pages))}")
+    # Create agent
+    # use_self_rag=True for highest accuracy (but slower)
+    # use_self_rag=False for speed with good accuracy
+    agent = create_advanced_rag_agent(
+        vector_db=vector_db,
+        use_self_rag=True  # Change to False for faster response
+    )
+    
+    test_questions = [
+        "What is the net income for Q3 2025?",
+        "What is the free cash flow?",
+        "What is the gearing ratio?",
+        "How much was the dividend declared?"
+    ]
+    
+    for i, question in enumerate(test_questions, 1):
+        print(f"\n{'#'*60}")
+        print(f"Question {i}: {question}")
+        print(f"{'#'*60}")
+        
+        # Process the question
+        result = agent.process_query(question)
+        
+        # Display results
+        print(f"\n📊 Result:")
+        print(f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        print(f"Answer: {result['answer']}")
+        print(f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        print(f"📄 Source Pages: {', '.join(map(str, result['source_pages']))}")
+        print(f"🎯 Confidence Level: {result['confidence']}")
+        print(f"📈 Relevant Documents Count: {result['relevant_docs_count']}")
+        
+        if result['verification']:
+            print(f"\n🔍 Self-Verification Result:")
+            print(f"   {result['verification']['verification'][:200]}...")
+            print(f"   ✅ Passed" if result['verification']['passed'] else "   ⚠️ Failed")
+        
+        print()
+    
+    print("\n" + "="*60)
+    print("✅ Testing completed successfully!")
+    print("="*60)
