@@ -13,7 +13,7 @@ def get_base64_img(img_path):
 
 def launch_ui(process_fn, chat_fn):
     #load and encode the logo image
-    img_data = get_base64_img("images/logo.png")
+    img_data = get_base64_img("images/logo3.png")
     
     custom_theme = gr.themes.Soft(primary_hue="emerald", neutral_hue="slate")
     
@@ -22,16 +22,14 @@ def launch_ui(process_fn, chat_fn):
         gr.HTML(
             f"""
     <div style='text-align: left; padding: 20px 0; display: flex; align-items: center; gap: 25px;'>
-        <div style='width: 130px; 
-                    height: 130px; 
+        <div style='width: 160px; 
+                    height: 160px; 
                     border-radius: 50%; 
                     overflow: hidden; 
-                    border: 4px solid #FFD700; 
-                    box-shadow: 0 4px 15px rgba(0,0,0,0.1);
                     display: flex; 
                     align-items: center; 
-                    justify-content: center;'>
-            
+                    justify-content: center;
+                    background: transparent;'>
             <img src='data:image/png;base64,{img_data}' 
                  style='width: 100%; 
                         height: 100%; 
