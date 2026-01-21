@@ -180,7 +180,7 @@ class FinancialRAGAgent:
         
         # Answer generation prompt
         self.answer_prompt = ChatPromptTemplate.from_messages([
-            ("system", """You are an expert financial analyst for Saudi Aramco.
+            ("system", """You are an expert financial analyst.
             Use the provided documents to answer the question accurately.
             
             Important rules:
@@ -273,8 +273,7 @@ class FinancialRAGAgent:
         
         # Format final answer
         import re
-        answer = answer.replace('﷼', 'SAR')
-        answer = re.sub(r'(\d)(billion|million|SAR)', r'\1 \2', answer)
+        answer = re.sub(r'(\d)(billion|million|SAR|ريال)', r'\1 \2', answer)
         
         print(f"\n✅ Processing completed successfully!")
         

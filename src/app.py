@@ -2,7 +2,6 @@ import pathlib
 import re
 from finance_insight_lite.modules.processor import pdf_to_documents
 from finance_insight_lite.modules.verctor_store import build_vector_db
-from finance_insight_lite.modules.chat_engine import get_rag_chain
 from finance_insight_lite.modules.rag_agent import create_advanced_rag_agent
 
 
