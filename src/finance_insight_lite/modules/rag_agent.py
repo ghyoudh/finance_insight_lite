@@ -169,7 +169,7 @@ class FinancialRAGAgent:
     
     def __init__(self, vector_db, use_self_rag: bool = False):
         self.llm = ChatGroq(
-            model_name="llama-3.3-70b-versatile",
+            model="llama-3.3-70b-versatile",
             api_key=os.getenv("GROQ_API_KEY"),
             temperature=0
         )
