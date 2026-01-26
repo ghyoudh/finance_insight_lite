@@ -115,7 +115,7 @@ class CRAGRetriever:
 
 
 # ============================================================================
-# 2. Self-RAG - Self-verification (Optional)
+# 2. Self-RAG - Self-verification
 # ============================================================================
 
 class SelfRAGVerifier:

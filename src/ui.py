@@ -1,9 +1,11 @@
+import shutil
 import streamlit as st
 import os
 from pathlib import Path
 from dotenv import load_dotenv
 import time
 import sys
+from finance_insight_lite.modules.processor import load_documents_fastest, clear_cache
 
 # Load environment variables
 project_root = Path(__file__).parent.parent
@@ -22,7 +24,7 @@ from finance_insight_lite.modules.rag_agent import create_advanced_rag_agent
 # Page config
 st.set_page_config(
     page_title="Finance Insight Lite",
-    page_icon="../images/logo.png",
+    page_icon="./images/logo.png",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -72,7 +74,7 @@ st.markdown("""
         border-color: #555;
         color: white;
     }
-    
+
     /* Active/Focus state */
     div.stButton > button:active, div.stButton > button:focus {
         background-color: #444;
@@ -96,38 +98,93 @@ if 'pending_question' not in st.session_state:
 with st.sidebar:
     col1, col2 = st.columns([2.5, 4]) # Adjust ratios for width
     with col1:
-        st.image("../images/logo.png", use_container_width=True)
+        st.image("./images/logo.png", use_container_width=True)
     with col2:
         st.markdown('<p class="main-header" style="font-size:25px; font-weight:bold;">Finance Insight Lite</p>', unsafe_allow_html=True)
 
-    # Upload PDF
+    # Upload PDF or Excel
     st.subheader("📄 Document Upload")
-    uploaded_file = st.file_uploader("Upload PDF", type=['pdf'], help="Upload a financial report in PDF format.")
+    uploaded_files = st.file_uploader(
+        "Upload PDF or Excel",
+        type=['pdf', 'xlsx', 'xls'],
+        help="Upload a financial report in PDF or Excel format.",
+        accept_multiple_files=True
+    )
 
-    if uploaded_file:
-        # Save uploaded file
-        pdf_path = f"data/uploaded/{uploaded_file.name}"
-        os.makedirs("data/uploaded", exist_ok=True)
+    if uploaded_files:
+        # Clear and recreate upload directory
+        if os.path.exists("data/uploaded/"):
+            shutil.rmtree("data/uploaded")
+        os.makedirs("data/uploaded")
 
-        with open(pdf_path, "wb") as f:
-            f.write(uploaded_file.getbuffer())
+        # Save all uploaded files
+        uploaded_file_paths = []
+        for uploaded_file in uploaded_files:
+            file_path = f"data/uploaded/{uploaded_file.name}"
 
-        if st.button("Process Document"):
-            with st.spinner("Processing PDF..."):
-                # Load and process
-                documents = pdf_to_documents(pdf_path)
-                st.session_state.vector_db = build_vector_db(
-                    documents,
-                    db_path="./database"
-                )
+            with open(file_path, "wb") as f:
+                f.write(uploaded_file.getbuffer())
 
-                # Create agent
-                st.session_state.agent = create_advanced_rag_agent(
-                    st.session_state.vector_db,
-                    use_self_rag=True
-                )
+            uploaded_file_paths.append(file_path)
 
-                st.success(f"✅ Processed {len(documents)} pages!")
+        st.success(f"✅ Uploaded {len(uploaded_file_paths)} file(s) successfully!")
+
+        # Process Document Button
+        process_btn = st.button("🚀 Process All Documents", use_container_width=True)
+
+        if process_btn:
+            with st.spinner("Processing files..."):
+                start_time = time.time()
+
+                all_documents = []
+                file_types = []
+
+                # Progress bar
+                progress_bar = st.progress(0)
+                status_text = st.empty()
+
+                try:
+                    for idx, file_path in enumerate(uploaded_file_paths):
+                        # Update progress
+                        progress = (idx + 1) / len(uploaded_file_paths)
+                        progress_bar.progress(progress)
+                        status_text.text(f"Processing {idx + 1}/{len(uploaded_file_paths)}: {os.path.basename(file_path)}")
+
+                        # Load documents
+                        result = load_documents_fastest(
+                            file_path,
+                            use_cache=True,
+                            max_workers=4
+                        )
+
+
+                        all_documents.extend(result['documents'])
+                        file_types.append(result['file_type'])
+
+                    # Clear progress indicators
+                    progress_bar.empty()
+                    status_text.empty()
+
+                    # Build vector database
+                    with st.spinner("Building vector database..."):
+                        st.session_state.vector_db = build_vector_db(
+                            all_documents,
+                            db_path="./database"
+                        )
+
+                    # Create agent
+                    with st.spinner("Initializing agent..."):
+                        st.session_state.agent = create_advanced_rag_agent(
+                            st.session_state.vector_db,
+                            use_self_rag=True
+                        )
+
+                    processing_time = time.time() - start_time
+
+                    st.success(f"Processed {len(uploaded_file_paths)} files ({len(all_documents)} documents) in {processing_time:.2f}s!")
+
+                except Exception as e:
+                    st.error(f"Error: {str(e)}")
 
     st.divider()
     # Settings
@@ -136,6 +193,7 @@ with st.sidebar:
         st.subheader("RAG Configuration")
         use_self_rag = st.toggle("Enable Self-RAG", value=True, help="Higher accuracy but slower")
 
+        # RAG parameters
         relevance_threshold = st.slider(
             "Relevance Threshold",
             min_value=0.0,
@@ -145,6 +203,7 @@ with st.sidebar:
             help="Higher = stricter filtering"
         )
 
+        # Number of documents to retrieve
         num_docs = st.slider(
             "Number of Documents",
             min_value=3,
@@ -152,6 +211,19 @@ with st.sidebar:
             value=5,
             help="More docs = better coverage"
         )
+
+        # clear cache button and size display
+        cache_path = Path("data/cache")
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            if st.button("Clear Cache", use_container_width=True):
+                clear_cache()
+                st.success("✅ Cleared!")
+                st.rerun()
+        with col2:
+            if cache_path.exists():
+                cache_size = sum(f.stat().st_size for f in cache_path.glob("*.pkl")) / (1024 * 1024)
+                st.caption(f"{cache_size:.1f} MB cached")
 
     # Clear history
     if st.button("🗑️ Clear Chat History"):
@@ -170,10 +242,10 @@ with st.sidebar:
 
 # Display chat history
 for i, chat in enumerate(st.session_state.chat_history):
-    with st.chat_message("user", avatar="../images/user_icon.png"):
+    with st.chat_message("user", avatar="./images/user_icon.png"):
         st.write(chat['question'])
 
-    with st.chat_message("assistant", avatar="../images/chatbots_icon.png"):
+    with st.chat_message("assistant", avatar="./images/chatbots_icon.png"):
         st.markdown(f'<div class="answer-box">{chat["answer"]}</div>', unsafe_allow_html=True)
 
         # Display metadata
@@ -183,7 +255,7 @@ for i, chat in enumerate(st.session_state.chat_history):
         with col2:
             st.caption(f"🎯 Confidence: {chat['confidence']}")
         with col3:
-            st.caption(f"📊 Docs: {chat['relevant_docs_count']}")
+            st.caption(f"📊 Docs: {chat['relevant_docs_count'] if chat.get('relevant_docs_count') else 0}")
 
         # Verification result
         if chat.get('verification'):
