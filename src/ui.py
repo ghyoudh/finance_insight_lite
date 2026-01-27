@@ -113,14 +113,14 @@ with st.sidebar:
 
     if uploaded_files:
         # Clear and recreate upload directory
-        if os.path.exists("data/uploaded/"):
-            shutil.rmtree("data/uploaded")
-        os.makedirs("data/uploaded")
+        if os.path.exists("./data/uploaded/"):
+            shutil.rmtree("./data/uploaded")
+        os.makedirs("./data/uploaded")
 
         # Save all uploaded files
         uploaded_file_paths = []
         for uploaded_file in uploaded_files:
-            file_path = f"data/uploaded/{uploaded_file.name}"
+            file_path = f"./data/uploaded/{uploaded_file.name}"
 
             with open(file_path, "wb") as f:
                 f.write(uploaded_file.getbuffer())

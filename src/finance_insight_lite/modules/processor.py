@@ -259,33 +259,6 @@ def load_documents_fastest(file_path, use_cache=True, max_workers=4, **kwargs):
     }
 
 
-def load_documents_simple(file_path, **kwargs):
-    """
-    Simple fast loader without caching (for one-time processing)
-    
-    Use this if you don't want caching but still want speed boost
-    """
-    file_extension = os.path.splitext(file_path)[1].lower()
-    
-    if file_extension == '.pdf':
-        docs = pdf_to_documents_fast(file_path)
-        file_type = 'PDF'
-    
-    elif file_extension in ['.xlsx', '.xls']:
-        docs = excel_to_documents_optimized(file_path, **kwargs)
-        file_type = 'Excel'
-    
-    else:
-        raise ValueError(f"Unsupported file type: {file_extension}")
-    
-    return {
-        'documents': docs,
-        'relevant_docs_count': len(docs),
-        'file_type': file_type,
-        'source': os.path.basename(file_path)
-    }
-
-
 # ============================================================================
 # BACKWARD COMPATIBLE - Replace your old function
 # ============================================================================
