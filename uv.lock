@@ -444,7 +444,6 @@ wheels = [
 ]
 
 [[package]]
-<<<<<<< HEAD
 name = "faiss-cpu"
 version = "1.13.2"
 source = { registry = "https://pypi.org/simple" }
@@ -470,8 +469,6 @@ wheels = [
 ]
 
 [[package]]
-=======
->>>>>>> 3a918ad (UI Update: Adjusted logo zoom and added beta version notice)
 name = "filelock"
 version = "3.20.3"
 source = { registry = "https://pypi.org/simple" }
@@ -503,10 +500,7 @@ dependencies = [
     { name = "dataclasses-json" },
     { name = "distro" },
     { name = "durationpy" },
-<<<<<<< HEAD
     { name = "faiss-cpu" },
-=======
->>>>>>> 3a918ad (UI Update: Adjusted logo zoom and added beta version notice)
     { name = "filelock" },
     { name = "flatbuffers" },
     { name = "frozenlist" },
@@ -514,17 +508,15 @@ dependencies = [
     { name = "google-auth" },
     { name = "googleapis-common-protos" },
     { name = "greenlet" },
-<<<<<<< HEAD
     { name = "groq" },
-=======
->>>>>>> 3a918ad (UI Update: Adjusted logo zoom and added beta version notice)
     { name = "grpcio" },
     { name = "h11" },
+    { name = "hf-xet" },
     { name = "httpcore" },
     { name = "httptools" },
     { name = "httpx" },
     { name = "httpx-sse" },
-    { name = "huggingface-hub" },
+    { name = "huggingface-hub", extra = ["hf-xet"] },
     { name = "humanfriendly" },
     { name = "idna" },
     { name = "importlib-metadata" },
@@ -540,10 +532,7 @@ dependencies = [
     { name = "langchain-classic" },
     { name = "langchain-community" },
     { name = "langchain-core" },
-<<<<<<< HEAD
     { name = "langchain-groq" },
-=======
->>>>>>> 3a918ad (UI Update: Adjusted logo zoom and added beta version notice)
     { name = "langchain-huggingface" },
     { name = "langchain-text-splitters" },
     { name = "langgraph" },
@@ -585,10 +574,7 @@ dependencies = [
     { name = "pydantic-core" },
     { name = "pydantic-settings" },
     { name = "pygments" },
-<<<<<<< HEAD
     { name = "pymupdf" },
-=======
->>>>>>> 3a918ad (UI Update: Adjusted logo zoom and added beta version notice)
     { name = "pypika" },
     { name = "pyproject-hooks" },
     { name = "pyreadline3" },
@@ -610,10 +596,7 @@ dependencies = [
     { name = "sentence-transformers" },
     { name = "shellingham" },
     { name = "six" },
-<<<<<<< HEAD
     { name = "sniffio" },
-=======
->>>>>>> 3a918ad (UI Update: Adjusted logo zoom and added beta version notice)
     { name = "sqlalchemy" },
     { name = "sympy" },
     { name = "tenacity" },
@@ -659,10 +642,7 @@ requires-dist = [
     { name = "dataclasses-json", specifier = "==0.6.7" },
     { name = "distro", specifier = "==1.9.0" },
     { name = "durationpy", specifier = "==0.10" },
-<<<<<<< HEAD
     { name = "faiss-cpu", specifier = "==1.13.2" },
-=======
->>>>>>> 3a918ad (UI Update: Adjusted logo zoom and added beta version notice)
     { name = "filelock", specifier = "==3.20.3" },
     { name = "flatbuffers", specifier = "==25.12.19" },
     { name = "frozenlist", specifier = "==1.8.0" },
@@ -670,17 +650,15 @@ requires-dist = [
     { name = "google-auth", specifier = "==2.47.0" },
     { name = "googleapis-common-protos", specifier = "==1.72.0" },
     { name = "greenlet", specifier = "==3.3.0" },
-<<<<<<< HEAD
     { name = "groq", specifier = "==0.37.1" },
-=======
->>>>>>> 3a918ad (UI Update: Adjusted logo zoom and added beta version notice)
     { name = "grpcio", specifier = "==1.76.0" },
     { name = "h11", specifier = "==0.16.0" },
+    { name = "hf-xet", specifier = ">=1.2.0" },
     { name = "httpcore", specifier = "==1.0.9" },
     { name = "httptools", specifier = "==0.7.1" },
     { name = "httpx", specifier = "==0.28.1" },
     { name = "httpx-sse", specifier = "==0.4.3" },
-    { name = "huggingface-hub", specifier = "==0.36.0" },
+    { name = "huggingface-hub", extras = ["hf-xet"], specifier = "==0.36.0" },
     { name = "humanfriendly", specifier = "==10.0" },
     { name = "idna", specifier = "==3.11" },
     { name = "importlib-metadata", specifier = "==8.7.1" },
@@ -696,10 +674,7 @@ requires-dist = [
     { name = "langchain-classic", specifier = "==1.0.1" },
     { name = "langchain-community", specifier = "==0.4.1" },
     { name = "langchain-core", specifier = "==1.2.7" },
-<<<<<<< HEAD
     { name = "langchain-groq", specifier = "==1.1.1" },
-=======
->>>>>>> 3a918ad (UI Update: Adjusted logo zoom and added beta version notice)
     { name = "langchain-huggingface", specifier = "==1.2.0" },
     { name = "langchain-text-splitters", specifier = "==1.1.0" },
     { name = "langgraph", specifier = "==1.0.6" },
@@ -741,10 +716,7 @@ requires-dist = [
     { name = "pydantic-core", specifier = "==2.41.5" },
     { name = "pydantic-settings", specifier = "==2.12.0" },
     { name = "pygments", specifier = "==2.19.2" },
-<<<<<<< HEAD
     { name = "pymupdf", specifier = "==1.26.7" },
-=======
->>>>>>> 3a918ad (UI Update: Adjusted logo zoom and added beta version notice)
     { name = "pypika", specifier = "==0.50.0" },
     { name = "pyproject-hooks", specifier = "==1.2.0" },
     { name = "pyreadline3", specifier = "==3.5.4" },
@@ -766,10 +738,7 @@ requires-dist = [
     { name = "sentence-transformers", specifier = "==5.2.0" },
     { name = "shellingham", specifier = "==1.5.4" },
     { name = "six", specifier = "==1.17.0" },
-<<<<<<< HEAD
     { name = "sniffio", specifier = "==1.3.1" },
-=======
->>>>>>> 3a918ad (UI Update: Adjusted logo zoom and added beta version notice)
     { name = "sqlalchemy", specifier = "==2.0.45" },
     { name = "sympy", specifier = "==1.14.0" },
     { name = "tenacity", specifier = "==9.1.2" },
@@ -990,7 +959,6 @@ wheels = [
 ]
 
 [[package]]
-<<<<<<< HEAD
 name = "groq"
 version = "0.37.1"
 source = { registry = "https://pypi.org/simple" }
@@ -1008,8 +976,6 @@ wheels = [
 ]
 
 [[package]]
-=======
->>>>>>> 3a918ad (UI Update: Adjusted logo zoom and added beta version notice)
 name = "grpcio"
 version = "1.76.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1188,6 +1154,11 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/98/63/4910c5fa9128fdadf6a9c5ac138e8b1b6cee4ca44bf7915bbfbce4e355ee/huggingface_hub-0.36.0.tar.gz", hash = "sha256:47b3f0e2539c39bf5cde015d63b72ec49baff67b6931c3d97f3f84532e2b8d25", size = 463358, upload-time = "2025-10-23T12:12:01.413Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/cb/bd/1a875e0d592d447cbc02805fd3fe0f497714d6a2583f59d14fa9ebad96eb/huggingface_hub-0.36.0-py3-none-any.whl", hash = "sha256:7bcc9ad17d5b3f07b57c78e79d527102d08313caa278a641993acddcb894548d", size = 566094, upload-time = "2025-10-23T12:11:59.557Z" },
+]
+
+[package.optional-dependencies]
+hf-xet = [
+    { name = "hf-xet" },
 ]
 
 [[package]]
@@ -1397,7 +1368,6 @@ wheels = [
 ]
 
 [[package]]
-<<<<<<< HEAD
 name = "langchain-groq"
 version = "1.1.1"
 source = { registry = "https://pypi.org/simple" }
@@ -1411,8 +1381,6 @@ wheels = [
 ]
 
 [[package]]
-=======
->>>>>>> 3a918ad (UI Update: Adjusted logo zoom and added beta version notice)
 name = "langchain-huggingface"
 version = "1.2.0"
 source = { registry = "https://pypi.org/simple" }
@@ -2868,7 +2836,6 @@ wheels = [
 ]
 
 [[package]]
-<<<<<<< HEAD
 name = "pymupdf"
 version = "1.26.7"
 source = { registry = "https://pypi.org/simple" }
@@ -2884,8 +2851,6 @@ wheels = [
 ]
 
 [[package]]
-=======
->>>>>>> 3a918ad (UI Update: Adjusted logo zoom and added beta version notice)
 name = "pypika"
 version = "0.50.0"
 source = { registry = "https://pypi.org/simple" }
@@ -3451,11 +3416,11 @@ wheels = [
 
 [[package]]
 name = "setuptools"
-version = "80.9.0"
+version = "80.10.1"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/18/5d/3bf57dcd21979b887f014ea83c24ae194cfcd12b9e0fda66b957c69d1fca/setuptools-80.9.0.tar.gz", hash = "sha256:f36b47402ecde768dbfafc46e8e4207b4360c654f1f3bb84475f0a28628fb19c", size = 1319958, upload-time = "2025-05-27T00:56:51.443Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/86/ff/f75651350db3cf2ef767371307eb163f3cc1ac03e16fdf3ac347607f7edb/setuptools-80.10.1.tar.gz", hash = "sha256:bf2e513eb8144c3298a3bd28ab1a5edb739131ec5c22e045ff93cd7f5319703a", size = 1229650, upload-time = "2026-01-21T09:42:03.061Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/a3/dc/17031897dae0efacfea57dfd3a82fdd2a2aeb58e0ff71b77b87e44edc772/setuptools-80.9.0-py3-none-any.whl", hash = "sha256:062d34222ad13e0cc312a4c02d73f059e86a4acbfbdea8f8f76b28c99f306922", size = 1201486, upload-time = "2025-05-27T00:56:49.664Z" },
+    { url = "https://files.pythonhosted.org/packages/e0/76/f963c61683a39084aa575f98089253e1e852a4417cb8a3a8a422923a5246/setuptools-80.10.1-py3-none-any.whl", hash = "sha256:fc30c51cbcb8199a219c12cc9c281b5925a4978d212f84229c909636d9f6984e", size = 1099859, upload-time = "2026-01-21T09:42:00.688Z" },
 ]
 
 [[package]]
@@ -3477,7 +3442,6 @@ wheels = [
 ]
 
 [[package]]
-<<<<<<< HEAD
 name = "sniffio"
 version = "1.3.1"
 source = { registry = "https://pypi.org/simple" }
@@ -3487,8 +3451,6 @@ wheels = [
 ]
 
 [[package]]
-=======
->>>>>>> 3a918ad (UI Update: Adjusted logo zoom and added beta version notice)
 name = "sqlalchemy"
 version = "2.0.45"
 source = { registry = "https://pypi.org/simple" }

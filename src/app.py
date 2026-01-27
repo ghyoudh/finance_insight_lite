@@ -128,14 +128,10 @@ if __name__ == "__main__":
         print(f"📄 Source Pages: {', '.join(map(str, result['source_pages']))}")
         print(f"🎯 Confidence Level: {result['confidence']}")
         print(f"📈 Relevant Documents Count: {result.get('relevant_docs_count', 0)}")
-        
-        if result['verification']:
-            print(f"\n🔍 Self-Verification Result:")
-            print(f"   {result['verification']['verification'][:200]}...")
-            print(f"   ✅ Passed" if result['verification']['passed'] else "   ⚠️ Failed")
-        
-        print()
-    
+        if result.get('verification'):
+            verification_text = result['verification'].get('notes', 'No details available')
+            print(f"\n🔍 Verification Details:\n{verification_text}")
+
     print("\n" + "="*60)
     print("✅ Testing completed successfully!")
     print("="*60)

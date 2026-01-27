@@ -36,7 +36,7 @@ dependencies = [
     "httptools==0.7.1",
     "httpx==0.28.1",
     "httpx-sse==0.4.3",
-    "huggingface-hub==0.36.0",
+    "huggingface-hub[hf-xet]==0.36.0",
     "humanfriendly==10.0",
     "idna==3.11",
     "importlib_metadata==8.7.1",
@@ -140,6 +140,7 @@ dependencies = [
     "yarl==1.22.0",
     "zipp==3.23.0",
     "zstandard==0.25.0",
+    "hf-xet>=1.2.0",
 ]
 
 [build-system]
