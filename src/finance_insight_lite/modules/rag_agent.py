@@ -177,9 +177,11 @@ class FinancialRAGAgent:
             vector_db: Vector database containing financial documents
             use_self_rag: Enable self-verification (increases accuracy but slower)
         """
+        from pydantic import SecretStr
+        api_key = os.getenv("GROQ_API_KEY")
         self.llm = ChatGroq(
             model="llama-3.3-70b-versatile",
-            api_key=os.getenv("GROQ_API_KEY"),
+            api_key=SecretStr(api_key) if api_key else None,
             temperature=0
         )
         

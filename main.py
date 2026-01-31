@@ -15,8 +15,8 @@ load_dotenv()
 
 # Import your modules
 import sys
-current_dir = Path(__file__).parent.parent
-sys.path.append(str(current_dir / "src"))
+project_root = Path(__file__).parent
+sys.path.append(str(project_root / "src"))
 
 from finance_insight_lite.modules.processor import pdf_to_documents
 from finance_insight_lite.modules.verctor_store import build_vector_db
@@ -121,7 +121,7 @@ async def upload_document(
     4. Initializes the RAG agent
     """
     
-    if not file.filename.endswith('.pdf'):
+    if not file.filename or not file.filename.endswith('.pdf'):
         raise HTTPException(status_code=400, detail="Only PDF files are supported")
     
     try:

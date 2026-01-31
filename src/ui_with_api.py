@@ -1,9 +1,3 @@
-"""
-Streamlit Frontend for Finance Insight Lite
-Connects to FastAPI backend
-No authentication - simple and fast!
-"""
-
 import streamlit as st
 import requests
 from pathlib import Path
@@ -29,7 +23,7 @@ API_URL = "http://localhost:8000"
 # Page config
 st.set_page_config(
     page_title="Finance Insight Lite",
-    page_icon="💼",
+    page_icon=str(Path(__file__).parent.parent / "images" / "logo3.png"),
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -213,7 +207,7 @@ def show_api_status():
 # Sidebar
 with st.sidebar:
     # Try to load logo if exists
-    logo_path = project_root / "images" / "logo.png"
+    logo_path = Path(__file__).parent.parent / "images" / "logo.png"
     if logo_path.exists():
         st.image(str(logo_path), width=100)
     
@@ -312,8 +306,9 @@ for chat in st.session_state.chat_history:
 # Chat input
 user_question = st.chat_input("Type your question here...")
 
-# Sample questions (only show if no chat history)
-if len(st.session_state.chat_history) == 0:
+# Sample questions (only show if no chat history AND document is loaded)
+success_info, doc_info = get_document_info()
+if len(st.session_state.chat_history) == 0 and success_info and doc_info:
     sample_questions = get_sample_questions()
     
     if sample_questions:
@@ -372,11 +367,4 @@ if user_question:
 
 # Footer
 st.divider()
-st.markdown(
-    """
-    <div style="text-align: center; color: #888;">
-        <p>Powered by FastAPI + Advanced RAG (CRAG + Agentic + Self-RAG)</p>
-    </div>
-    """,
-    unsafe_allow_html=True
-)
+

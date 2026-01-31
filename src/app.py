@@ -1,11 +1,13 @@
 import pathlib
 import re
-from finance_insight_lite.modules.processor import load_documents, pdf_to_documents
+from finance_insight_lite.modules.processor import load_documents_fastest, pdf_to_documents
 from finance_insight_lite.modules.verctor_store import build_vector_db
 from finance_insight_lite.modules.rag_agent import create_advanced_rag_agent
 import pandas as pd
-
-
+import subprocess
+import time
+import sys
+from pathlib import Path
 from dotenv import load_dotenv
 import os
 from pathlib import Path
@@ -52,14 +54,14 @@ def load_all_files_from_folder(folder_path):
         print(f"📄 Reading: {file.name}...")
         try:
             if file.suffix == '.pdf':
-                # Use the load_documents function for PDF
-                result = load_documents(str(file))
+                # Use the load_documents_fastest function for PDF
+                result = load_documents_fastest(str(file))
                 all_documents.extend(result['documents'])
                 print(f"   ✓ Loaded {result['relevant_docs_count']} pages")
                 
             elif file.suffix in ['.xlsx', '.xls']:
-                # Use the load_documents function for Excel
-                result = load_documents(str(file))
+                # Use the load_documents_fastest function for Excel
+                result = load_documents_fastest(str(file))
                 all_documents.extend(result['documents'])
                 print(f"   ✓ Loaded {result['relevant_docs_count']} sheets")
                 
@@ -75,63 +77,35 @@ def load_all_files_from_folder(folder_path):
     }
 
 if __name__ == "__main__":
-    result = load_all_files_from_folder("data/rew")
-    content = result['documents']
-    doc_count = result['relevant_docs_count']
-    print(f"\n📈 Relevant Documents Count: {doc_count}")
-    # Show summary by file type
-    pdf_docs = [d for d in content if d.metadata.get('page')]
-    excel_docs = [d for d in content if d.metadata.get('sheet_name')]
-    # print the first 300 characters of the extracted content
-    print("\nPart of the extracted content:")
-    print(content[:300])
+   # Paths
+    # Always resolve main.py relative to project root
+    project_root = Path(__file__).resolve().parent.parent
+    main_py = project_root / "main.py"
+    streamlit_ui = project_root / "src" / "ui_with_api.py"
 
-    print("-" * 30)
-    # Build or load vector database
-    verctor_db_path = pathlib.Path("./data/database")
-    if not verctor_db_path.exists():
-        verctor_db_path.mkdir(parents=True)
-    vector_db = build_vector_db(content)
-    print("Vector database has been built and persisted.")
+    # Start FastAPI (main.py)
+    print("🚀 Starting FastAPI backend (main.py)...")
+    api_process = subprocess.Popen([sys.executable, str(main_py)])
+    time.sleep(3)  # Wait a bit to ensure backend is up
 
-    print("-" * 30)
-    # Create agent
-    # use_self_rag=True for highest accuracy (but slower)
-    # use_self_rag=False for speed with good accuracy
-    agent = create_advanced_rag_agent(
-        vector_db=vector_db,
-        use_self_rag=True  # Change to False for faster response
-    )
+    # Start Streamlit UI
+    print("🖥️  Starting Streamlit UI (ui_with_api.py)...")
+    ui_process = subprocess.Popen(["streamlit", "run", str(streamlit_ui)])
+
+    print("✅ Both FastAPI and Streamlit UI are running.")
+    print("- FastAPI:   http://localhost:8000/docs")
+    print("- Streamlit: http://localhost:8501/")
+
+    try:
+        # Wait for both processes
+        api_process.wait()
+        ui_process.wait()
+    except KeyboardInterrupt:
+        print("\n🛑 Shutting down...")
+        api_process.terminate()
+        ui_process.terminate()
+        print("✅ All processes terminated.")
     
-    test_questions = [
-        "What is the net income for Q3 2025?",
-        "What is the free cash flow?",
-        "What is the gearing ratio?",
-        "How much was the dividend declared?",
-        "Compare the net profit between 2022 and 2023. Which year performed better, and what are the main reasons for this change according to the data?",
-        "What is the Adjusted Net Income for the year 2024?"
-    ]
-    
-    for i, question in enumerate(test_questions, 1):
-        print(f"\n{'#'*60}")
-        print(f"Question {i}: {question}")
-        print(f"{'#'*60}")
-        
-        # Process the question
-        result = agent.process_query(question)
-        
-        # Display results
-        print(f"\n📊 Result:")
-        print(f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-        print(f"Answer: {result['answer']}")
-        print(f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-        print(f"📄 Source Pages: {', '.join(map(str, result['source_pages']))}")
-        print(f"🎯 Confidence Level: {result['confidence']}")
-        print(f"📈 Relevant Documents Count: {result.get('relevant_docs_count', 0)}")
-        if result.get('verification'):
-            verification_text = result['verification'].get('notes', 'No details available')
-            print(f"\n🔍 Verification Details:\n{verification_text}")
-
-    print("\n" + "="*60)
-    print("✅ Testing completed successfully!")
-    print("="*60)
+    # (Optional) Keep the old test code for reference
+    # To use the old test code, comment out the above and uncomment below
+    # ...existing code...
