@@ -275,11 +275,11 @@ class FinancialRAGAgent:
         
         answer = chain.invoke(question)
         
-        # Extract unique page numbers from the metadata
-        source_pages = sorted(list(set([
-            item["document"].metadata.get("page", item["document"].metadata.get("sheet_name", "Unknown"))
+        # Extract unique page numbers from the metadata (convert all to string for consistent sorting)
+        source_pages = sorted(set([
+            str(item["document"].metadata.get("page", item["document"].metadata.get("sheet_name", "Unknown")))
             for item in relevant_graded_results
-        ])))
+        ]), key=lambda x: (x == "Unknown", x))  # Sort with "Unknown" at the end
 
         # Step 3: Self-Verification (Self-RAG)
         verification = None
