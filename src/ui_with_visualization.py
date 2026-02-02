@@ -1,4 +1,3 @@
-# ui_with_visualization.py
 """
 Streamlit UI with Financial Data Visualization Support
 """
@@ -8,11 +7,22 @@ import plotly.graph_objects as go
 import json
 from pathlib import Path
 import os
+import sys
+from dotenv import load_dotenv
 
 # Import your modules
 from finance_insight_lite.modules.processor import load_documents_fastest
 from finance_insight_lite.modules.verctor_store import build_vector_db
 from finance_insight_lite.modules.rag import create_rag
+
+# Load environment variables
+project_root = Path(__file__).parent.parent
+env_path = project_root / '.env'
+load_dotenv(dotenv_path=env_path)
+current_dir = os.path.dirname(os.path.abspath(__file__))
+package_path = os.path.join(current_dir, "finance_insight_lite")
+sys.path.append(current_dir)
+sys.path.append(package_path)
 
 # Page config
 st.set_page_config(

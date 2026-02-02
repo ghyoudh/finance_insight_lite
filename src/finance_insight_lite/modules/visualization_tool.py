@@ -1,4 +1,3 @@
-# financial_visualization_tool.py
 """
 Financial Data Visualization Tool
 Enables the RAG agent to create charts from financial data
