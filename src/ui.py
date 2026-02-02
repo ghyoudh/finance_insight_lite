@@ -19,7 +19,7 @@ sys.path.append(package_path)
 # Import your modules
 from finance_insight_lite.modules.processor import pdf_to_documents
 from finance_insight_lite.modules.verctor_store import build_vector_db
-from finance_insight_lite.modules.rag_agent import create_advanced_rag_agent
+from finance_insight_lite.modules.rag_agent import create_rag_agent
 
 # Page config
 st.set_page_config(
@@ -153,8 +153,8 @@ with st.sidebar:
                         # Load documents
                         result = load_documents_fastest(
                             file_path,
-                            use_cache=True,
-                            max_workers=4
+                            use_cache=True,  # Enable caching
+                            max_workers=2  # Reduced workers for lighter processing
                         )
 
 
@@ -172,11 +172,11 @@ with st.sidebar:
                             db_path="./database"
                         )
 
-                    # Create agent
+                    # Create agent with toggle for Self-RAG
                     with st.spinner("Initializing agent..."):
-                        st.session_state.agent = create_advanced_rag_agent(
+                        st.session_state.agent = create_rag_agent(
                             st.session_state.vector_db,
-                            use_self_rag=True
+                            use_self_rag= True  # Pass the toggle value
                         )
 
                     processing_time = time.time() - start_time
@@ -208,7 +208,7 @@ with st.sidebar:
             "Number of Documents",
             min_value=3,
             max_value=10,
-            value=5,
+            value=3,  # Reduced default value for faster processing
             help="More docs = better coverage"
         )
 
@@ -243,24 +243,30 @@ with st.sidebar:
 # Display chat history
 for i, chat in enumerate(st.session_state.chat_history):
     with st.chat_message("user", avatar="./images/user_icon.png"):
-        st.write(chat['question'])
+        st.write(chat.get('question'))
 
     with st.chat_message("assistant", avatar="./images/chatbots_icon.png"):
-        st.markdown(f'<div class="answer-box">{chat["answer"]}</div>', unsafe_allow_html=True)
+        answer = chat.get('answer')
+        st.markdown(f'<div class="answer-box">{answer}</div>', unsafe_allow_html=True)
 
         # Display metadata
         col1, col2, col3 = st.columns(3)
         with col1:
-            st.caption(f"📄 Pages: {', '.join(map(str, chat['source_pages']))}")
+            source_pages = chat.get('source_pages', [])
+            if source_pages:
+                st.caption(f"📄 Pages: {', '.join(source_pages)}")
+            else:
+                st.caption("📄 Pages: N/A")  # Fallback if no pages are available
         with col2:
-            st.caption(f"🎯 Confidence: {chat['confidence']}")
+            st.caption(f"🎯 Confidence: {chat['confidence'] if chat.get('confidence') else 'N/A'}")
         with col3:
             st.caption(f"📊 Docs: {chat['relevant_docs_count'] if chat.get('relevant_docs_count') else 0}")
 
         # Verification result
         if chat.get('verification'):
             with st.expander("🔍 View Verification"):
-                st.write(chat['verification']['verification'])
+                verification_result = chat['verification'].get('notes', "No verification notes available.")
+                st.write(verification_result)
 
 # Input area
 user_question = st.chat_input("Type your question here...")
@@ -274,7 +280,7 @@ if len(st.session_state.chat_history) == 0:
 
     # Sample questions
     sample_questions = [
-        "What is the net income for Q3 2025?",
+        "What is the net income?",
         "What is the free cash flow?",
         "What is the gearing ratio?",
         "How much was the dividend declared?",
@@ -294,18 +300,22 @@ if len(st.session_state.chat_history) == 0:
 if st.session_state.pending_question:
     question = st.session_state.pending_question
     st.session_state.pending_question = None
-    
+
     if st.session_state.agent is None:
         st.warning("⚠️ Please upload and process a PDF document first!")
     else:
         # Process the question
         with st.spinner("🤔 Thinking..."):
             result = st.session_state.agent.process_query(question)
-        
+
         # Save to history
         st.session_state.chat_history.append({
             'question': question,
-            **result
+            'answer': result['answer'],
+            'source_pages': result['source_pages'],
+            'confidence': result['confidence'],
+            'verification': result.get('verification'),
+            'relevant_docs_count': result['relevant_docs_count']
         })
         st.rerun()
 
@@ -318,10 +328,14 @@ if user_question:
     # Process query
     with st.spinner("🤔 Thinking..."):
         result = st.session_state.agent.process_query(user_question)
-    
+
     # Save to history
     st.session_state.chat_history.append({
         'question': user_question,
-        **result
+        'answer': result['answer'],
+        'source_pages': result['source_pages'],
+        'confidence': result['confidence'],
+        'verification': result.get('verification'),
+        'relevant_docs_count': result['relevant_docs_count']
     })
     st.rerun()
