@@ -11,13 +11,12 @@ from pathlib import Path
 from dotenv import load_dotenv
 import os
 from pathlib import Path
+import uvicorn
+import requests
 
 # Load environment variables from .env file
-# Get the project root directory (parent of src/)
 project_root = Path(__file__).parent.parent
 env_path = project_root / '.env'
-
-# Load the .env file
 load_dotenv(dotenv_path=env_path)
 
 # Debug: Check if the key is loaded
@@ -28,6 +27,38 @@ else:
     print("✗ API Key NOT loaded!")
     print(f"Looking for .env at: {env_path}")
     print(f".env exists: {env_path.exists()}")
+
+
+def wait_for_api(url="http://localhost:8000/health", timeout=60, check_interval=2):
+    """
+    Wait for the API to be ready
+    
+    Args:
+        url: Health check URL
+        timeout: Maximum time to wait in seconds
+        check_interval: Time between checks in seconds
+        
+    Returns:
+        bool: True if API is ready, False if timeout
+    """
+    print(f"⏳ Waiting for API to be ready (timeout: {timeout}s)...")
+    start_time = time.time()
+    
+    while time.time() - start_time < timeout:
+        try:
+            response = requests.get(url, timeout=5)
+            if response.status_code == 200:
+                print("✅ API is ready!")
+                return True
+        except requests.exceptions.RequestException:
+            pass
+        
+        elapsed = int(time.time() - start_time)
+        print(f"   Waiting... ({elapsed}s)", end='\r')
+        time.sleep(check_interval)
+    
+    print(f"\n❌ API did not become ready within {timeout} seconds")
+    return False
 
 
 def load_all_files_from_folder(folder_path):
@@ -76,36 +107,80 @@ def load_all_files_from_folder(folder_path):
         'relevant_docs_count': len(all_documents)
     }
 
+
 if __name__ == "__main__":
-   # Paths
-    # Always resolve main.py relative to project root
+    # Paths - always resolve relative to project root
     project_root = Path(__file__).resolve().parent.parent
     main_py = project_root / "main.py"
     streamlit_ui = project_root / "src" / "ui_with_api.py"
 
-    # Start FastAPI (main.py)
-    print("🚀 Starting FastAPI backend (main.py)...")
-    api_process = subprocess.Popen([sys.executable, str(main_py)])
-    time.sleep(3)  # Wait a bit to ensure backend is up
+    print("=" * 70)
+    print("🚀 Starting Finance Insight Lite Application")
+    print("=" * 70)
+
+    # Verify files exist
+    if not main_py.exists():
+        print(f"❌ Error: main.py not found at {main_py}")
+        sys.exit(1)
+    if not streamlit_ui.exists():
+        print(f"❌ Error: ui_with_api.py not found at {streamlit_ui}")
+        sys.exit(1)
+
+    # Start FastAPI backend
+    print("\n📡 Step 1: Starting FastAPI backend...")
+    print(f"   Location: {main_py}")
+    print(f"   Working directory: {project_root}")
+    
+    api_process = subprocess.Popen(
+        [sys.executable, "-m", "uvicorn", "main:app", "--host", "127.0.0.1", "--port", "8000", "--reload"],
+        cwd=str(project_root),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE
+    )
+    
+    # Wait for API to be ready
+    if not wait_for_api(timeout=60, check_interval=2):
+        print("❌ FastAPI failed to start. Terminating...")
+        api_process.terminate()
+        sys.exit(1)
 
     # Start Streamlit UI
-    print("🖥️  Starting Streamlit UI (ui_with_api.py)...")
-    ui_process = subprocess.Popen(["streamlit", "run", str(streamlit_ui)])
+    print("\n🖥️  Step 2: Starting Streamlit UI...")
+    print(f"   Location: {streamlit_ui}")
+    
+    ui_process = subprocess.Popen(
+        ["streamlit", "run", str(streamlit_ui)],
+        cwd=str(project_root)
+    )
+    
+    # Give Streamlit a moment to start
+    time.sleep(3)
 
-    print("✅ Both FastAPI and Streamlit UI are running.")
-    print("- FastAPI:   http://localhost:8000/docs")
-    print("- Streamlit: http://localhost:8501/")
+    print("\n" + "=" * 70)
+    print("✅ Application is running!")
+    print("=" * 70)
+    print("📊 Access points:")
+    print("   - FastAPI Docs:  http://localhost:8000/docs")
+    print("   - Streamlit UI:  http://localhost:8501/")
+    print("\n💡 Press Ctrl+C to stop both servers")
+    print("=" * 70)
 
     try:
         # Wait for both processes
         api_process.wait()
         ui_process.wait()
     except KeyboardInterrupt:
-        print("\n🛑 Shutting down...")
-        api_process.terminate()
+        print("\n" + "=" * 70)
+        print("🛑 Shutting down gracefully...")
+        print("=" * 70)
+        
+        print("   Stopping Streamlit...")
         ui_process.terminate()
-        print("✅ All processes terminated.")
-    
-    # (Optional) Keep the old test code for reference
-    # To use the old test code, comment out the above and uncomment below
-    # ...existing code...
+        ui_process.wait(timeout=5)
+        
+        print("   Stopping FastAPI...")
+        api_process.terminate()
+        api_process.wait(timeout=5)
+        
+        print("✅ All processes terminated successfully.")
+        print("=" * 70)
