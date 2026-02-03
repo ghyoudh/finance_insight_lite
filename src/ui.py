@@ -22,7 +22,7 @@ sys.path.append(package_path)
 # Import your modules
 from finance_insight_lite.modules.processor import pdf_to_documents
 from finance_insight_lite.modules.verctor_store import build_vector_db
-from finance_insight_lite.modules.rag_agent import OptimizedFinancialRAGAgent
+from finance_insight_lite.modules.rag_agent import FinancialRAGAgent
 
 # Page config
 st.set_page_config(
@@ -177,9 +177,8 @@ with st.sidebar:
 
                     # Create agent with toggle for Self-RAG
                     with st.spinner("Initializing agent..."):
-                        st.session_state.agent = OptimizedFinancialRAGAgent(
+                        st.session_state.agent = FinancialRAGAgent(
                             st.session_state.vector_db,
-                            use_self_rag= True  # Pass the toggle value
                         )
 
                     processing_time = time.time() - start_time
@@ -366,12 +365,12 @@ if st.session_state.pending_question:
         # Save to history
         chat_entry = {
             'question': question,
-            'answer': result['answer'],
-            'source_pages': result['source_pages'],
-            'confidence': result['confidence'],
+            'answer': result.get('answer'),
+            'source_pages': result.get('source_pages'),
+            'confidence': result.get('confidence'),
             'verification': result.get('verification'),
-            'relevant_docs_count': result['relevant_docs_count'],
-            'chart': result.get('chart_data')  # Use chart_data from result
+            'relevant_docs_count': result.get('relevant_docs_count'),
+            'chart': result.get('chart')  # Use chart from result
         }
         st.session_state.chat_history.append(chat_entry)
         st.rerun()
@@ -389,12 +388,12 @@ if user_question:
     # Save to history
     chat_entry = {
         'question': user_question,
-        'answer': result['answer'],
-        'source_pages': result['source_pages'],
-        'confidence': result['confidence'],
+        'answer': result.get('answer'),
+        'source_pages': result.get('source_pages'),
+        'confidence': result.get('confidence'),
         'verification': result.get('verification'),
-        'relevant_docs_count': result['relevant_docs_count'],
-        'chart': result.get('chart_data')  # Use chart_data from result
+        'relevant_docs_count': result.get('relevant_docs_count'),
+        'chart': result.get('chart')  # Use chart from result
     }
     st.session_state.chat_history.append(chat_entry)
     st.rerun()

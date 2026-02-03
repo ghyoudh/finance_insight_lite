@@ -11,6 +11,7 @@ import asyncio
 import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
+import json
 
 
 # ============================================================================
@@ -31,7 +32,7 @@ class CRAGRetriever:
         self.batch_grader_prompt = ChatPromptTemplate.from_messages([
             ("system", """You are a Strategic Financial Analyst with expertise in corporate finance, investment analysis, and predictive modeling.
 
-Your role is to rapidly assess document relevance across multiple dimensions:
+Your role extends beyond data retrieval to encompass:
 
 **Core Analytical Framework:**
 1. **Historical Performance Analysis**
@@ -50,19 +51,12 @@ Your role is to rapidly assess document relevance across multiple dimensions:
    - Evaluate risk factors and their potential future impact
 
 **Document Relevance Criteria:**
-A document is RELEVANT if it contains:
-- Quantitative financial data, metrics, or figures directly applicable to the question
-- Strategic information about the company/topic in question
-- Trend data, performance indicators, or contextual analysis
-- Historical patterns that enable predictive insights
-- Risk factors or operational context that impacts financial outcomes
+- **Highly Relevant**: Contains quantitative data, trends, or context directly applicable to answering the question
+- **Moderately Relevant**: Provides supporting context or partial data that contributes to analysis
+- **Irrelevant**: Lacks financial substance or connection to the analytical requirements
 
-Otherwise, mark it as IRRELEVANT.
-
-**Response Format:**
-For each document, respond with ONLY ONE WORD: "RELEVANT" or "IRRELEVANT"
-Format as a numbered list matching the document numbers."""),
-            ("human", "Question: {question}\n\nDocuments:\n{documents}\n\nClassifications:")
+Classify the document as: 'Highly Relevant', 'Moderately Relevant', or 'Irrelevant'."""),
+            ("human", "Question: {question}\n\nDocument: {document}\n\nAssessment:")
         ])
     
     def batch_grade_documents(self, question: str, documents: List[Any]) -> List[bool]:
@@ -156,13 +150,21 @@ class SelfRAGVerifier:
         self.llm = llm
         
         self.verification_prompt = ChatPromptTemplate.from_messages([
-            ("system", """You are a fact-checker. Rate the answer 1-10 based on:
-1. Source support
-2. Accuracy
-3. Citations
+            ("system", """You are a meticulous fact-checker for financial analysis.
+            
+            Verify if the provided answer is:
+            1. Supported by the source documents
+            2. Accurate in its numerical claims
+            3. Properly cited with page references
+            
+            Rate the answer on a scale of 1-10 and provide specific notes on any issues."""),
+            ("human", """Question: {question}
+            
+Answer: {answer}
 
-Be concise."""),
-            ("human", "Q: {question}\nA: {answer}\n\nRating (1-10):")
+Sources: {sources}
+
+Verification Assessment:""")
         ])
     
     def verify_answer(self, question: str, answer: str, sources: List[str]) -> Dict[str, Any]:
@@ -171,7 +173,8 @@ Be concise."""),
             response = self.llm.invoke(
                 self.verification_prompt.format(
                     question=question,
-                    answer=answer
+                    answer=answer,
+                    sources="\n\n".join(sources[:5])  # Limit to first 5 sources for speed
                 )
             )
             
@@ -196,291 +199,201 @@ Be concise."""),
 class FinancialDataExtractor:
     """Extract financial data from documents for visualization"""
     
-    def __init__(self, vector_db):
+    def __init__(self, vector_db, llm):
         self.vector_db = vector_db
+        self.llm = llm  # Use LLM to help extract structured data
     
     def extract_data_from_query(self, query: str, k: int = 5) -> pd.DataFrame:
         """
-        Extract numerical data from documents based on query
+        Extract numerical data using LLM-assisted parsing
         
         Args:
-            query: Natural language query describing the data needed
-            k: Number of documents to retrieve
+            query: What data to extract
+            k: Number of documents to search
         
         Returns:
             DataFrame with extracted data
         """
+        # Retrieve more documents for better data coverage
         docs = self.vector_db.similarity_search(query, k=k)
         
-        all_data = []
-        
-        for doc in docs:
-            # Check if document is from Excel
-            if doc.metadata.get('sheet_name'):
-                data = self._parse_excel_content(doc.page_content)
-                if data:
-                    all_data.extend(data)
-            else:
-                data = self._parse_pdf_tables(doc.page_content)
-                if data:
-                    all_data.extend(data)
-        
-        if not all_data:
-            print("⚠️ No data extracted from documents. Creating contextual demo data...")
-            all_data = self._create_contextual_demo_data(query)
-        
-        if not all_data:
+        if not docs:
             return pd.DataFrame()
+        
+        # Combine all doc content
+        combined_text = "\n\n".join([
+            f"[Page {doc.metadata.get('page', '?')} | Sheet: {doc.metadata.get('sheet_name', 'N/A')}]\n{doc.page_content}"
+            for doc in docs
+        ])
+        
+        # Use LLM to extract structured data
+        extraction_prompt = ChatPromptTemplate.from_messages([
+            ("system", """You are a financial data extraction specialist.
+            
+            Extract structured numerical data from the provided text.
+            Return ONLY a valid JSON array of objects. No explanations, no markdown, no ```json``` blocks.
+            
+            Rules:
+            - Each object must have a "label" key and a "value" key
+            - "value" must be a number (remove commas, currency symbols, and units)
+            - If you find quarterly data, use labels like "Q1 2025", "Q2 2025"
+            - If you find yearly data, use labels like "2024", "2025"
+            - NEVER include empty values or null values
+            - Extract as many data points as possible
+            - Only extract data relevant to the query
+            
+            Example output:
+            [{"label": "Q1 2025", "value": 25000}, {"label": "Q2 2025", "value": 28000}]
+            """),
+            ("human", f"Query: {query}\n\nText:\n{combined_text}\n\nExtracted JSON:")
+        ])
         
         try:
-            df = pd.DataFrame(all_data)
-            print(f"✅ Created DataFrame with shape: {df.shape}")
-            print(f"✅ DataFrame columns: {df.columns.tolist()}")
-            return df
-        except Exception as e:
-            print(f"⚠️ Error creating DataFrame: {e}")
-            return pd.DataFrame()
-    
-    def _create_contextual_demo_data(self, query: str) -> List[Dict]:
-        """Create contextual demo data based on the query"""
-        print(f"📊 Creating contextual demo data for: {query}")
-        
-        query_lower = query.lower()
-        
-        # Detect what type of data is requested
-        if "net income" in query_lower or "income" in query_lower:
-            demo_data = [
-                {"Period": "Q1 2023", "Net Income": 1500000},
-                {"Period": "Q2 2023", "Net Income": 1750000},
-                {"Period": "Q3 2023", "Net Income": 2000000},
-                {"Period": "Q4 2023", "Net Income": 2250000},
-            ]
-        elif "revenue" in query_lower:
-            demo_data = [
-                {"Period": "Q1 2023", "Revenue": 5000000},
-                {"Period": "Q2 2023", "Revenue": 5500000},
-                {"Period": "Q3 2023", "Revenue": 6000000},
-                {"Period": "Q4 2023", "Revenue": 6500000},
-            ]
-        elif "profit" in query_lower or "margin" in query_lower:
-            demo_data = [
-                {"Period": "Q1 2023", "Profit Margin": 30},
-                {"Period": "Q2 2023", "Profit Margin": 32},
-                {"Period": "Q3 2023", "Profit Margin": 35},
-                {"Period": "Q4 2023", "Profit Margin": 36},
-            ]
-        elif "expense" in query_lower or "cost" in query_lower:
-            demo_data = [
-                {"Period": "Q1 2023", "Expenses": 3500000},
-                {"Period": "Q2 2023", "Expenses": 3750000},
-                {"Period": "Q3 2023", "Expenses": 4000000},
-                {"Period": "Q4 2023", "Expenses": 4250000},
-            ]
-        elif "cash flow" in query_lower:
-            demo_data = [
-                {"Period": "Q1 2023", "Cash Flow": 1000000},
-                {"Period": "Q2 2023", "Cash Flow": 1200000},
-                {"Period": "Q3 2023", "Cash Flow": 1400000},
-                {"Period": "Q4 2023", "Cash Flow": 1600000},
-            ]
-        else:
-            # Default: Generic financial data
-            demo_data = [
-                {"Quarter": "Q1", "Revenue": 100, "Expenses": 60, "Profit": 40},
-                {"Quarter": "Q2", "Revenue": 120, "Expenses": 70, "Profit": 50},
-                {"Quarter": "Q3", "Revenue": 140, "Expenses": 80, "Profit": 60},
-                {"Quarter": "Q4", "Revenue": 160, "Expenses": 90, "Profit": 70},
-            ]
-        
-        return demo_data
-    
-    def _create_demo_data(self) -> List[Dict]:
-        """Create default demo data for demonstration purposes"""
-        print("📊 Creating default demo financial data...")
-        
-        demo_data = [
-            {"Quarter": "Q1", "Revenue": 100, "Expenses": 60, "Profit": 40},
-            {"Quarter": "Q2", "Revenue": 120, "Expenses": 70, "Profit": 50},
-            {"Quarter": "Q3", "Revenue": 140, "Expenses": 80, "Profit": 60},
-            {"Quarter": "Q4", "Revenue": 160, "Expenses": 90, "Profit": 70},
-        ]
-        
-        return demo_data
-    
-    def _parse_excel_content(self, content: str) -> List[Dict]:
-        """Parse Excel sheet content into structured data"""
-        lines = content.split('\n')
-        data = []
-        
-        headers = None
-        for line in lines:
-            line = line.strip()
-            if not line:
-                continue
+            response = self.llm.invoke(extraction_prompt)
+            raw = response.content.strip()
             
-            # Split by whitespace or common delimiters
-            parts = re.split(r'\s+|,|\|', line)
-            parts = [p.strip() for p in parts if p.strip()]
+            # Clean up the response - remove markdown code blocks if present
+            raw = re.sub(r'```(?:json)?\s*', '', raw)
+            raw = raw.replace('```', '').strip()
             
-            if headers is None and len(parts) > 1:
-                headers = parts
-            elif headers and len(parts) == len(headers):
-                try:
-                    # Try to convert to numeric if possible
-                    row_dict = {}
-                    for header, value in zip(headers, parts):
+            # Parse JSON
+            data = json.loads(raw)
+            
+            if isinstance(data, list) and len(data) > 0:
+                # Filter out empty or invalid entries
+                valid_data = []
+                for item in data:
+                    if isinstance(item, dict) and 'label' in item and 'value' in item:
+                        label = str(item['label']).strip()
                         try:
-                            row_dict[header] = float(value)
-                        except ValueError:
-                            row_dict[header] = value
-                    data.append(row_dict)
-                except Exception as e:
-                    print(f"⚠️ Error parsing row: {e}")
+                            value = float(str(item['value']).strip())
+                            if label and value >= 0:  # Only keep valid entries
+                                valid_data.append({'label': label, 'value': value})
+                        except (ValueError, TypeError):
+                            continue
+                
+                if valid_data:
+                    df = pd.DataFrame(valid_data)
+                    print(f"✅ Extracted {len(df)} valid data points using LLM")
+                    return df
+            
+        except json.JSONDecodeError as e:
+            print(f"⚠️ JSON parsing error: {e}")
+            print(f"   Raw response: {raw[:200]}")
+        except Exception as e:
+            print(f"⚠️ LLM extraction error: {e}")
         
-        return data
+        # Fallback: Manual regex parsing
+        print("📌 Falling back to regex extraction...")
+        return self._regex_extract(combined_text)
     
-    def _parse_pdf_tables(self, content: str) -> List[Dict]:
-        """Parse tables from PDF text content"""
-        lines = content.split('\n')
+    def _regex_extract(self, text: str) -> pd.DataFrame:
+        """Fallback regex-based extraction for common financial patterns"""
         data = []
         
-        current_row = {}
-        
-        for line in lines:
-            # Skip empty lines
-            if not line.strip():
-                if current_row:
-                    data.append(current_row)
-                    current_row = {}
+        # Pattern 1: "Q1 2025 ... $25.0 billion" or "Q1 2025: 25,000"
+        quarterly_pattern = r'(Q[1-4]\s*\d{4})[^\d]*?([\d,]+\.?\d*)\s*(?:billion|million|bn|mn|مليار|مليون)?'
+        for match in re.finditer(quarterly_pattern, text, re.IGNORECASE):
+            label = match.group(1).strip()
+            try:
+                value = float(match.group(2).replace(',', ''))
+                if label and value >= 0:
+                    data.append({"label": label, "value": value})
+            except (ValueError, AttributeError):
                 continue
-            
-            # Try to extract key-value pairs
-            if ':' in line and any(char.isdigit() for char in line):
-                parts = line.split(':')
-                if len(parts) == 2:
-                    label = parts[0].strip()
-                    value = parts[1].strip()
-                    
-                    # Try to convert value to numeric
-                    try:
-                        numeric_value = float(re.sub(r'[^\d.-]', '', value))
-                        current_row[label] = numeric_value
-                    except (ValueError, AttributeError):
-                        current_row[label] = value
-            
-            elif '|' in line and any(char.isdigit() for char in line):
-                parts = line.split('|')
-                parts = [p.strip() for p in parts if p.strip()]
-                
-                if len(parts) >= 2:
-                    try:
-                        label = parts[0]
-                        numeric_value = float(re.sub(r'[^\d.-]', '', parts[1]))
-                        current_row[label] = numeric_value
-                    except (ValueError, AttributeError):
-                        label = parts[0]
-                        value = parts[1]
-                        current_row[label] = value
         
-        # Don't forget the last row
-        if current_row:
-            data.append(current_row)
+        # Pattern 2: "Label: $value" or "Label | value"
+        label_value_pattern = r'([A-Za-z\s]+(?:income|revenue|profit|cost|expense|cash|flow|ratio|margin|dividend|EBITDA|CapEx))[:\|]\s*\$?([\d,]+\.?\d*)'
+        for match in re.finditer(label_value_pattern, text, re.IGNORECASE):
+            label = match.group(1).strip()
+            try:
+                value = float(match.group(2).replace(',', ''))
+                if label and value >= 0:
+                    data.append({"label": label, "value": value})
+            except (ValueError, AttributeError):
+                continue
         
-        return data
+        # Pattern 3: Year-based "2023 ... value"
+        year_pattern = r'(20\d{2})[^\d]*?([\d,]+\.?\d*)\s*(?:billion|million|bn|mn)?'
+        for match in re.finditer(year_pattern, text):
+            label = match.group(1)
+            try:
+                value = float(match.group(2).replace(',', ''))
+                if value > 0:
+                    data.append({"label": label, "value": value})
+            except (ValueError, AttributeError):
+                continue
+        
+        if data:
+            df = pd.DataFrame(data)
+            # Remove duplicates
+            df = df.drop_duplicates(subset=['label'])
+            # Ensure value is numeric and drop any NaN
+            df['value'] = pd.to_numeric(df['value'], errors='coerce')
+            df = df.dropna(subset=['value'])
+            print(f"✅ Regex extracted {len(df)} valid data points")
+            return df if len(df) > 0 else pd.DataFrame()
+        
+        return pd.DataFrame()
 
 class ChartGenerator:
-    """Generate Plotly charts from data"""
+    """Generate Plotly charts with financial styling"""
+    
+    # Consistent color palette
+    COLORS = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd',
+              '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
     
     @staticmethod
     def create_line_chart(df: pd.DataFrame, x: str, y: str, title: str) -> go.Figure:
-        """Create a line chart"""
-        try:
-            fig = px.line(
-                df, 
-                x=x, 
-                y=y, 
-                title=title, 
-                markers=True, 
-                template="plotly_white",
-                line_shape="linear"
-            )
-            fig.update_layout(hovermode='x unified', showlegend=True, height=500)
-            fig.update_traces(line=dict(width=3))
-            return fig
-        except Exception as e:
-            print(f"⚠️ Error creating line chart: {e}")
-            raise
+        fig = px.line(df, x=x, y=y, title=title, markers=True,
+                      template="plotly_white", color_discrete_sequence=ChartGenerator.COLORS)
+        fig.update_layout(
+            hovermode='x unified', height=500,
+            title_font_size=20, axis_title_font_size=14,
+            xaxis_title=x.replace('_', ' ').title(),
+            yaxis_title=y.replace('_', ' ').title()
+        )
+        return fig
     
     @staticmethod
     def create_bar_chart(df: pd.DataFrame, x: str, y: str, title: str) -> go.Figure:
-        """Create a bar chart"""
-        try:
-            fig = px.bar(
-                df, 
-                x=x, 
-                y=y, 
-                title=title, 
-                template="plotly_white",
-                text_auto=True
-            )
-            fig.update_layout(showlegend=True, height=500)
-            return fig
-        except Exception as e:
-            print(f"⚠️ Error creating bar chart: {e}")
-            raise
+        fig = px.bar(df, x=x, y=y, title=title, template="plotly_white",
+                     color_discrete_sequence=ChartGenerator.COLORS)
+        fig.update_layout(
+            height=500, title_font_size=20,
+            xaxis_title=x.replace('_', ' ').title(),
+            yaxis_title=y.replace('_', ' ').title()
+        )
+        fig.update_traces(marker_color=ChartGenerator.COLORS[0])
+        return fig
     
     @staticmethod
     def create_pie_chart(df: pd.DataFrame, names: str, values: str, title: str) -> go.Figure:
-        """Create a pie chart"""
-        try:
-            fig = px.pie(
-                df, 
-                names=names, 
-                values=values, 
-                title=title, 
-                template="plotly_white"
-            )
-            fig.update_traces(textposition='inside', textinfo='percent+label')
-            fig.update_layout(height=500)
-            return fig
-        except Exception as e:
-            print(f"⚠️ Error creating pie chart: {e}")
-            raise
+        fig = px.pie(df, names=names, values=values, title=title,
+                     template="plotly_white", color_discrete_sequence=ChartGenerator.COLORS)
+        fig.update_traces(textposition='inside', textinfo='percent+label')
+        fig.update_layout(height=500, title_font_size=20)
+        return fig
     
     @staticmethod
     def create_scatter_chart(df: pd.DataFrame, x: str, y: str, title: str) -> go.Figure:
-        """Create a scatter chart"""
         try:
             df = df.copy()
-            # If x is not numeric or datetime, map it to numeric indices and keep labels
+            # If x is not numeric, convert to numeric with labels
             if not pd.api.types.is_numeric_dtype(df[x]) and not pd.api.types.is_datetime64_any_dtype(df[x]):
                 df["_x_index"] = range(len(df))
                 x_plot = "_x_index"
                 tickvals = df["_x_index"].tolist()
                 ticktext = df[x].astype(str).tolist()
-                # do not use trendline when x is categorical
-                fig = px.scatter(
-                    df,
-                    x=x_plot,
-                    y=y,
-                    title=title,
-                    template="plotly_white",
-                    size_max=60
-                )
+                # No trendline for categorical x
+                fig = px.scatter(df, x=x_plot, y=y, title=title, template="plotly_white",
+                                color_discrete_sequence=ChartGenerator.COLORS)
                 fig.update_xaxes(tickmode="array", tickvals=tickvals, ticktext=ticktext)
             else:
-                # numeric or datetime x -> can include trendline
-                fig = px.scatter(
-                    df,
-                    x=x,
-                    y=y,
-                    title=title,
-                    template="plotly_white",
-                    trendline="ols",
-                    size_max=60
-                )
-
-            fig.update_layout(height=500, hovermode='closest')
+                # Numeric/datetime x - can use trendline
+                fig = px.scatter(df, x=x, y=y, title=title, template="plotly_white",
+                                trendline="ols", color_discrete_sequence=ChartGenerator.COLORS)
+            fig.update_layout(height=500, title_font_size=20)
             return fig
         except Exception as e:
             print(f"⚠️ Error creating scatter chart: {e}")
@@ -488,314 +401,208 @@ class ChartGenerator:
     
     @staticmethod
     def create_area_chart(df: pd.DataFrame, x: str, y: str, title: str) -> go.Figure:
-        """Create an area chart"""
-        try:
-            fig = px.area(
-                df, 
-                x=x, 
-                y=y, 
-                title=title, 
-                template="plotly_white"
-            )
-            fig.update_layout(height=500, hovermode='x unified')
-            return fig
-        except Exception as e:
-            print(f"⚠️ Error creating area chart: {e}")
-            raise
+        fig = px.area(df, x=x, y=y, title=title, template="plotly_white",
+                      color_discrete_sequence=ChartGenerator.COLORS)
+        fig.update_layout(height=500, title_font_size=20)
+        return fig
 
 
 # ============================================================================
 # 4. OPTIMIZED Agentic RAG - Fast & Efficient
 # ============================================================================
 ##
-class OptimizedFinancialRAGAgent:
-    """
-    High-performance RAG agent optimized for speed
-    """
-
-    def __init__(self, vector_db, use_self_rag: bool = False, api_key: Optional[str] = None):
+class FinancialRAGAgent:
+    """Extract financial data from documents for visualization"""
+    
+    def __init__(self, vector_db):
+        self.vector_db = vector_db
+    
+    def extract_data_from_query(self, query: str, k: int = 8) -> pd.DataFrame:
         """
-        Initialize the optimized agent
-        
-        Args:
-            vector_db: Vector database containing financial documents
-            use_self_rag: Enable self-verification (adds ~2-3s but improves accuracy)
-            api_key: Optional Groq API key (will use env var if not provided)
+        Extract numerical data using LLM-assisted parsing
         """
-        api_key = api_key or os.getenv("GROQ_API_KEY")
+        api_key = os.getenv("GROQ_API_KEY")
         
         # Use faster model configuration
         self.llm = ChatGroq(
             model="llama-3.3-70b-versatile",
             api_key=SecretStr(api_key) if api_key else None,
             temperature=0,
-            max_tokens=1024,  # Limit response length for speed
-            timeout=30  # Add timeout
         )
-        
-        self.vector_db = vector_db
-        self.crag_retriever = CRAGRetriever(vector_db, self.llm)
-        self.self_rag = SelfRAGVerifier(self.llm) if use_self_rag else None
-        self.data_extractor = FinancialDataExtractor(vector_db)
-        self.chart_generator = ChartGenerator()
 
-        # Streamlined answer prompt
-        self.answer_prompt = ChatPromptTemplate.from_messages([
-            ("system", """You are a Senior Strategic Financial Analyst with visualization capabilities.
-            
-            Use the provided context to answer the query with strategic insights.
-            
-            **When user requests visualization:**
-            - Respond with: "I'll create a [chart_type] visualization for you."
-            - Then provide the answer with the data context
-            
-            **Visualization Keywords:**
-            - draw, plot, chart, show, visualize, graph, display
-            - Chart types: line (trends), bar (comparisons), pie (proportions), scatter (correlations), area (cumulative)
-            
-            **Strict Guidelines:**
-            1. **Accuracy**: Use exact figures and dates from the text
-            2. **Strategic Insight**: Provide recommendations based on trends
-            3. **Formatting**: Space between numbers and currencies (e.g., 50.5 million SAR)
-            4. **Citations**: Mention page numbers [Page X]
-            5. **Predictive Analysis**: Explain forecasts using historical patterns
-            
-            Context:
-{context}"""),
-            ("human", "{question}")
+        docs = self.vector_db.similarity_search(query, k=k)
+        
+        if not docs:
+            return pd.DataFrame()
+        
+        combined_text = "\n\n".join([
+            f"[Page {doc.metadata.get('page', '?')} | Sheet: {doc.metadata.get('sheet_name', 'N/A')}]\n{doc.page_content}"
+            for doc in docs
         ])
-
-    def _detect_visualization_request(self, question: str) -> Optional[Dict[str, str]]:
-        """
-        Detect if the question is asking for a visualization
         
-        Returns:
-            Dict with chart_type and data_query, or None if not a viz request
-        """
-        question_lower = question.lower()
+        extraction_prompt = ChatPromptTemplate.from_messages([
+            ("system", """You are a financial data extraction specialist.
+            
+            Extract structured numerical data from the provided text.
+            Return ONLY a valid JSON array of objects. No explanations, no markdown, no ```json``` blocks.
+            
+            STRICT Rules:
+            - Each object must have a "label" key and a "value" key
+            - "label" must NEVER be empty or null
+            - "value" must ALWAYS be a valid number (no empty strings, no null, no text)
+            - Remove commas, currency symbols (﷼, $), and units (billion, million) from values
+            - If you find quarterly data, use labels like "Q1 2025", "Q2 2025"
+            - If you find yearly data, use labels like "2024", "2025"
+            - Only include entries where BOTH label and value are valid
+            - Extract as many data points as possible
+            - Keep your answer to 10-12 sentences maximum
+            
+            WRONG:
+            [{"label": "", "value": ""}, {"label": "Revenue", "value": null}]
+            
+            CORRECT:
+            [{"label": "Q1 2025", "value": 25000}, {"label": "Q2 2025", "value": 28000}]
+            """),
+            ("human", f"Query: {query}\n\nText:\n{combined_text}\n\nExtracted JSON:")
+        ])
         
-        # Check for visualization keywords
-        viz_keywords = ['draw', 'plot', 'chart', 'show', 'visualize', 'graph', 'display', 'create']
-        if not any(keyword in question_lower for keyword in viz_keywords):
-            return None
-        
-        # Detect chart type
-        chart_type = "bar"  # default
-        
-        if any(word in question_lower for word in ["line", "trend", "over time", "growth", "history"]):
-            chart_type = "line"
-        elif any(word in question_lower for word in ["pie", "proportion", "breakdown", "distribution", "share"]):
-            chart_type = "pie"
-        elif any(word in question_lower for word in ["scatter", "correlation", "relationship"]):
-            chart_type = "scatter"
-        elif any(word in question_lower for word in ["area", "cumulative"]):
-            chart_type = "area"
-        
-        return {
-            "chart_type": chart_type,
-            "data_query": question
-        }
-
-    def _create_visualization(self, chart_type: str, data_query: str, 
-                            x_axis: str = None, y_axis: str = None, 
-                            title: str = None) -> Dict[str, Any]:
-        """
-        Create a visualization from the query
-        """
         try:
-            # Extract data
-            df = self.data_extractor.extract_data_from_query(data_query)
+            response = self.llm.invoke(extraction_prompt)
+            raw = response.content.strip()
             
-            if df.empty or df is None:
-                print("⚠️ DataFrame is empty after extraction")
-                # Create fallback demo data
-                df = pd.DataFrame(self.data_extractor._create_contextual_demo_data(data_query))
+            # Clean up markdown code blocks
+            raw = re.sub(r'```(?:json)?\s*', '', raw)
+            raw = raw.replace('```', '').strip()
             
-            if df.empty:
-                return {
-                    "success": False,
-                    "error": "No data available",
-                    "chart": None
-                }
+            # Sometimes LLM adds text before/after the JSON array
+            # Extract only the JSON array part
+            json_match = re.search(r'\[.*\]', raw, re.DOTALL)
+            if json_match:
+                raw = json_match.group(0)
             
-            print(f"✅ DataFrame shape: {df.shape}")
-            print(f"✅ DataFrame columns: {df.columns.tolist()}")
-
-            # Auto-detect columns
-            numeric_cols = df.select_dtypes(include=['number']).columns.tolist()
-            string_cols = df.select_dtypes(include=['object']).columns.tolist()
+            data = json.loads(raw)
             
-            if not x_axis:
-                x_axis = string_cols[0] if string_cols else df.columns[0]
+            if isinstance(data, list) and len(data) > 0:
+                df = self._clean_dataframe(data)
+                if not df.empty:
+                    print(f"✅ Extracted {len(df)} valid data points using LLM")
+                    return df
             
-            if not y_axis:
-                y_axis = numeric_cols[0] if numeric_cols else (df.columns[1] if len(df.columns) > 1 else df.columns[0])
-            
-            # Ensure columns exist
-            if x_axis not in df.columns:
-                x_axis = df.columns[0]
-            
-            if y_axis not in df.columns:
-                y_axis = df.columns[-1] if len(df.columns) > 1 else df.columns[0]
-            
-            print(f"✅ Using X: {x_axis}, Y: {y_axis}")
-
-            if not title:
-                title = f"{chart_type.title()} Chart"
-            
-            # Create chart
-            try:
-                if chart_type == "line":
-                    fig = self.chart_generator.create_line_chart(df, x_axis, y_axis, title)
-                elif chart_type == "bar":
-                    fig = self.chart_generator.create_bar_chart(df, x_axis, y_axis, title)
-                elif chart_type == "pie":
-                    fig = self.chart_generator.create_pie_chart(df, x_axis, y_axis, title)
-                elif chart_type == "scatter":
-                    fig = self.chart_generator.create_scatter_chart(df, x_axis, y_axis, title)
-                elif chart_type == "area":
-                    fig = self.chart_generator.create_area_chart(df, x_axis, y_axis, title)
-                else:
-                    return {
-                        "success": False,
-                        "error": f"Unsupported chart: {chart_type}",
-                        "chart": None
-                    }
-            except Exception as chart_error:
-                print(f"⚠️ Chart error: {chart_error}")
-                import traceback
-                traceback.print_exc()
-                return {
-                    "success": False,
-                    "error": f"Chart error: {str(chart_error)}",
-                    "chart": None
-                }
-            
-            # Convert to JSON
-            chart_json = fig.to_json()
-            
-            result = {
-                "success": True,
-                "chart_type": chart_type,
-                "chart": chart_json,
-                "data_preview": df.head(10).to_dict('records'),
-                "data_shape": df.shape,
-                "title": title
-            }
-            
-            print(f"✅ Chart created: {len(chart_json)} bytes")
-            return result
-        
+        except json.JSONDecodeError as e:
+            print(f"⚠️ JSON parsing error: {e}")
+            print(f"   Raw response: {raw[:200]}")
         except Exception as e:
-            print(f"⚠️ Error: {e}")
-            import traceback
-            traceback.print_exc()
-            return {
-                "success": False,
-                "error": str(e),
-                "chart": None
-            }
-
-    def _format_docs_with_pages(self, graded_results: List[Dict]) -> str:
-        """Format documents efficiently"""
-        formatted = []
-        for item in graded_results:
-            doc = item["document"]
-            page = doc.metadata.get("page", "Unknown")
-            # Truncate content to reduce context size
-            content = doc.page_content[:800]  # Reduced from full content
-            formatted.append(f"[Page {page}]\n{content}")
+            print(f"⚠️ LLM extraction error: {e}")
         
-        return "\n---\n".join(formatted)
-
-    def process_query(self, question: str, skip_verification: bool = False) -> Dict[str, Any]:
+        # Fallback
+        print("📌 Falling back to regex extraction...")
+        return self._regex_extract(combined_text)
+    
+    def _clean_dataframe(self, data: list) -> pd.DataFrame:
         """
-        Fast query processing pipeline
-        
-        Args:
-            question: The financial query
-            skip_verification: Skip self-verification for maximum speed
-        
-        Returns:
-            Dictionary with answer, sources, and metadata
+        Strict cleaning of extracted data
+        Removes any row with empty, null, or non-numeric values
         """
+        cleaned = []
         
-        print(f"\n{'='*60}")
-        print(f"🕵️ Query: {question}")
-        print(f"{'='*60}")
-
-        # Step 0: Check for visualization request
-        viz_request = self._detect_visualization_request(question)
-        chart_data = None
-        
-        if viz_request:
-            print(f"📊 Visualization: {viz_request['chart_type']} chart")
-            chart_data = self._create_visualization(
-                chart_type=viz_request['chart_type'],
-                data_query=viz_request['data_query']
-            )
+        for item in data:
+            if not isinstance(item, dict):
+                continue
             
-            if chart_data and chart_data.get('success'):
-                print(f"✅ Chart created: {chart_data.get('data_shape', 'N/A')} points")
-            else:
-                print(f"⚠️ Chart failed: {chart_data.get('error', 'Unknown error') if chart_data else 'No data'}")
-
-        # Step 1: Retrieve documents
-        relevant_graded_results = self.crag_retriever.get_relevant_documents(
-            question=question, 
-            k=5
-        )
-
-        if not relevant_graded_results:
-            return {
-                "answer": "No relevant data found.",
-                "source_pages": [],
-                "confidence": "low",
-                "verification": None,
-                "relevant_docs_count": 0,
-                "chart_data": chart_data
-            }
-
-        # Step 2: Generate answer
-        print(f"💡 Generating response...")
-
-        context = self._format_docs_with_pages(relevant_graded_results)
-
-        chain = (
-            {"context": lambda x: context, "question": RunnablePassthrough()}
-            | self.answer_prompt
-            | self.llm
-            | StrOutputParser()
-        )
-
-        answer = chain.invoke(question)
-
-        # Extract source pages
-        source_pages = sorted(set([
-            str(item["document"].metadata.get("page", "Unknown"))
-            for item in relevant_graded_results
-            if item["document"].metadata.get("page")
-        ]), key=lambda x: (x == "Unknown", x))
-
-        # Step 3: Verify (optional)
-        verification = None
-        if self.self_rag and not skip_verification:
-            print("🔍 Verifying...")
-            verification = self.self_rag.verify_answer(
-                question,
-                answer,
-                sources=[item["document"].page_content[:300] for item in relevant_graded_results]
-            )
-            print(f"✅ Score: {verification.get('rating', 'N/A')}/10")
-
-        # Clean up formatting
-        answer = re.sub(r'(\d)(billion|million|SAR|USD|ريال)', r'\1 \2', answer)
-
-        return {
-            "answer": answer,
-            "source_pages": source_pages,
-            "confidence": "high" if not self.self_rag or (verification and verification.get("passed")) else "medium",
-            "verification": verification,
-            "relevant_docs_count": len(relevant_graded_results),
-            "chart_data": chart_data
-        }
+            # Get label - must be a non-empty string
+            label = item.get('label')
+            if label is None or str(label).strip() == '':
+                continue
+            label = str(label).strip()
+            
+            # Get value - must be convertible to float
+            value = item.get('value')
+            if value is None or str(value).strip() == '':
+                continue
+            
+            # Clean the value string: remove commas, spaces, currency symbols
+            value_str = str(value).strip()
+            value_str = value_str.replace(',', '')
+            value_str = value_str.replace('﷼', '')
+            value_str = value_str.replace('$', '')
+            value_str = value_str.replace(' ', '')
+            
+            # Remove text units if attached (e.g., "28.0billion")
+            value_str = re.sub(r'(billion|million|trillion|bn|mn|tn|مليار|مليون)', '', value_str, flags=re.IGNORECASE)
+            value_str = value_str.strip()
+            
+            # Final check: must be a valid number
+            if value_str == '':
+                continue
+            
+            try:
+                numeric_value = float(value_str)
+                cleaned.append({'label': label, 'value': numeric_value})
+            except (ValueError, TypeError):
+                print(f"  ⚠️ Skipping invalid value: label='{label}', value='{value}'")
+                continue
+        
+        if not cleaned:
+            return pd.DataFrame()
+        
+        df = pd.DataFrame(cleaned)
+        df = df.drop_duplicates(subset=['label'])
+        
+        return df
+    
+    def _regex_extract(self, text: str) -> pd.DataFrame:
+        """Fallback regex-based extraction"""
+        data = []
+        
+        # Pattern 1: Quarterly "Q1 2025 ... number"
+        quarterly_pattern = r'(Q[1-4]\s*\d{4})[^\d]*?([\d,]+\.?\d*)\s*(?:billion|million|bn|mn|مليار|مليون)?'
+        for match in re.finditer(quarterly_pattern, text, re.IGNORECASE):
+            label = match.group(1).strip()
+            value_str = match.group(2).replace(',', '').strip()
+            if not value_str:
+                continue
+            try:
+                value = float(value_str)
+                data.append({"label": label, "value": value})
+            except ValueError:
+                continue
+        
+        # Pattern 2: "Financial Label: value"
+        label_value_pattern = r'([A-Za-z\s]+(?:income|revenue|profit|cost|expense|cash|flow|ratio|margin|dividend|EBITDA|CapEx))[:\|]\s*\$?([\d,]+\.?\d*)'
+        for match in re.finditer(label_value_pattern, text, re.IGNORECASE):
+            label = match.group(1).strip()
+            value_str = match.group(2).replace(',', '').strip()
+            if not value_str or not label:
+                continue
+            try:
+                value = float(value_str)
+                data.append({"label": label, "value": value})
+            except ValueError:
+                continue
+        
+        # Pattern 3: Year-based "2023 ... value"
+        year_pattern = r'(20\d{2})[^\d]*?([\d,]+\.?\d*)\s*(?:billion|million|bn|mn)?'
+        for match in re.finditer(year_pattern, text):
+            label = match.group(1).strip()
+            value_str = match.group(2).replace(',', '').strip()
+            if not value_str:
+                continue
+            try:
+                value = float(value_str)
+                if value > 0:
+                    data.append({"label": label, "value": value})
+            except ValueError:
+                continue
+        
+        if not data:
+            return pd.DataFrame()
+        
+        df = pd.DataFrame(data)
+        df = df.drop_duplicates(subset=['label'])
+        df['value'] = pd.to_numeric(df['value'], errors='coerce')
+        df = df.dropna(subset=['value', 'label'])
+        # Remove rows where label is empty string
+        df = df[df['label'].str.strip() != '']
+        
+        print(f"✅ Regex extracted {len(df)} valid data points")
+        return df if len(df) > 0 else pd.DataFrame()

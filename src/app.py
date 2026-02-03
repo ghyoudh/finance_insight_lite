@@ -2,7 +2,7 @@ import pathlib
 import re
 from finance_insight_lite.modules.processor import load_documents_fastest, pdf_to_documents
 from finance_insight_lite.modules.verctor_store import build_vector_db
-from finance_insight_lite.modules.rag_agent import OptimizedFinancialRAGAgent
+from finance_insight_lite.modules.rag_agent import FinancialRAGAgent
 import pandas as pd
 import subprocess
 import time
