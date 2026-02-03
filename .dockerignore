@@ -1,0 +1,89 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+**/__pycache__/
+**/*.pyc
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# IDE and editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+*.code-workspace
+
+# Data directories (will be mounted as volumes)
+# Keep the structure but exclude large files
+data/uploaded/*.pdf
+data/uploaded/*.xlsx
+data/vector_db/*
+database/*
+
+# Keep data/raw for default documents
+# data/raw/*
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# Docker files (don't copy these into the image)
+Dockerfile*
+docker-compose*.yml
+.dockerignore
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs
+*.log
+logs/
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+.eggs/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Documentation
+docs/
+*.md
+!README.md
+
+# Backup files
+*.backup
+*.bak
+*.old
+*.tmp
+
+# Node modules (if any)
+node_modules/
+
+# Environment files (will be mounted)
+# .env is mounted as volume, no need to copy
+
+# Images (if not needed in container)
+images/*.png
+images/*.jpg
+!images/logo.png
+
+# Jupyter notebooks
+*.ipynb
+.ipynb_checkpoints/
