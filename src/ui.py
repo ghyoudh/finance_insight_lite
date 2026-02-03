@@ -6,6 +6,9 @@ from dotenv import load_dotenv
 import time
 import sys
 from finance_insight_lite.modules.processor import load_documents_fastest, clear_cache
+import plotly.graph_objects as go
+import json
+import pandas as pd
 
 # Load environment variables
 project_root = Path(__file__).parent.parent
@@ -19,7 +22,7 @@ sys.path.append(package_path)
 # Import your modules
 from finance_insight_lite.modules.processor import pdf_to_documents
 from finance_insight_lite.modules.verctor_store import build_vector_db
-from finance_insight_lite.modules.rag_agent import create_rag_agent
+from finance_insight_lite.modules.rag_agent import FinancialRAGAgent
 
 # Page config
 st.set_page_config(
@@ -174,9 +177,8 @@ with st.sidebar:
 
                     # Create agent with toggle for Self-RAG
                     with st.spinner("Initializing agent..."):
-                        st.session_state.agent = create_rag_agent(
+                        st.session_state.agent = FinancialRAGAgent(
                             st.session_state.vector_db,
-                            use_self_rag= True  # Pass the toggle value
                         )
 
                     processing_time = time.time() - start_time
@@ -211,6 +213,20 @@ with st.sidebar:
             value=3,  # Reduced default value for faster processing
             help="More docs = better coverage"
         )
+
+        default_chart = st.selectbox(
+            "Default Chart Type",
+            ["bar", "line", "pie", "scatter", "area"],
+            help="Default chart type for visualizations"
+        )
+        st.session_state.default_chart_type = default_chart
+        
+        show_data_table = st.checkbox(
+            "Show Data Table",
+            value=True,
+            help="Display data table below charts"
+        )
+        st.session_state.show_data_table = show_data_table
 
         # clear cache button and size display
         cache_path = Path("data/cache")
@@ -249,8 +265,42 @@ for i, chat in enumerate(st.session_state.chat_history):
         answer = chat.get('answer')
         st.markdown(f'<div class="answer-box">{answer}</div>', unsafe_allow_html=True)
 
+        # Display chart if available
+        if chat.get('chart'):
+            chart_data = chat['chart']
+            
+            if chart_data.get('success'):
+                st.markdown('<div class="chart-container">', unsafe_allow_html=True)
+                
+                # Display chart
+                chart_json = chart_data.get('chart')
+                if chart_json:
+                    try:
+                        fig = go.Figure(json.loads(chart_json))
+                        st.plotly_chart(fig, use_container_width=True, key=f"chart_{i}")
+                        st.success(f"✅ Chart: {chart_data.get('title', 'Visualization')}")
+                    except Exception as e:
+                        st.error(f"⚠️ Error rendering chart: {e}")
+                else:
+                    st.warning("⚠️ No chart data available")
+                
+                # Display data table if enabled
+                if st.session_state.get('show_data_table', True):
+                    data_preview = chart_data.get('data_preview')
+                    if data_preview:
+                        with st.expander("📊 View Data Table"):
+                            try:
+                                df = pd.DataFrame(data_preview)
+                                st.dataframe(df, use_container_width=True)
+                            except Exception as e:
+                                st.error(f"⚠️ Error displaying table: {e}")
+                
+                st.markdown('</div>', unsafe_allow_html=True)
+            elif chart_data.get('error'):
+                st.info(f"📊 Chart unavailable: {chart_data.get('error')}")
+
         # Display metadata
-        col1, col2, col3 = st.columns(3)
+        col1, col2, col3, col4 = st.columns(4)
         with col1:
             source_pages = chat.get('source_pages', [])
             if source_pages:
@@ -261,6 +311,9 @@ for i, chat in enumerate(st.session_state.chat_history):
             st.caption(f"🎯 Confidence: {chat['confidence'] if chat.get('confidence') else 'N/A'}")
         with col3:
             st.caption(f"📊 Docs: {chat['relevant_docs_count'] if chat.get('relevant_docs_count') else 0}")
+        with col4:
+            if chat.get('chart'):
+                st.caption("📈 Visualization included")
 
         # Verification result
         if chat.get('verification'):
@@ -284,7 +337,8 @@ if len(st.session_state.chat_history) == 0:
         "What is the free cash flow?",
         "What is the gearing ratio?",
         "How much was the dividend declared?",
-        "What are the key financial highlights?"
+        "Draw a pie chart of expense breakdown",
+        "Visualize the profit margins"
     ]
 
     # Function to set pending question
@@ -309,14 +363,16 @@ if st.session_state.pending_question:
             result = st.session_state.agent.process_query(question)
 
         # Save to history
-        st.session_state.chat_history.append({
+        chat_entry = {
             'question': question,
-            'answer': result['answer'],
-            'source_pages': result['source_pages'],
-            'confidence': result['confidence'],
+            'answer': result.get('answer'),
+            'source_pages': result.get('source_pages'),
+            'confidence': result.get('confidence'),
             'verification': result.get('verification'),
-            'relevant_docs_count': result['relevant_docs_count']
-        })
+            'relevant_docs_count': result.get('relevant_docs_count'),
+            'chart': result.get('chart')  # Use chart from result
+        }
+        st.session_state.chat_history.append(chat_entry)
         st.rerun()
 
 # Process regular chat input
@@ -330,12 +386,14 @@ if user_question:
         result = st.session_state.agent.process_query(user_question)
 
     # Save to history
-    st.session_state.chat_history.append({
+    chat_entry = {
         'question': user_question,
-        'answer': result['answer'],
-        'source_pages': result['source_pages'],
-        'confidence': result['confidence'],
+        'answer': result.get('answer'),
+        'source_pages': result.get('source_pages'),
+        'confidence': result.get('confidence'),
         'verification': result.get('verification'),
-        'relevant_docs_count': result['relevant_docs_count']
-    })
+        'relevant_docs_count': result.get('relevant_docs_count'),
+        'chart': result.get('chart')  # Use chart from result
+    }
+    st.session_state.chat_history.append(chat_entry)
     st.rerun()

@@ -20,7 +20,7 @@ sys.path.append(str(project_root / "src"))
 
 from finance_insight_lite.modules.processor import pdf_to_documents
 from finance_insight_lite.modules.verctor_store import build_vector_db
-from finance_insight_lite.modules.rag_agent import create_rag_agent
+from finance_insight_lite.modules.rag_agent import FinancialRAGAgent
 
 # Initialize FastAPI
 app = FastAPI(
@@ -144,7 +144,7 @@ async def upload_document(
         state.vector_db = build_vector_db(documents, db_path=str(db_path))
         
         # Create agent
-        state.agent = create_rag_agent(
+        state.agent = FinancialRAGAgent(
             state.vector_db,
             use_self_rag=use_self_rag
         )
@@ -258,7 +258,7 @@ async def startup_event():
             print(f"📂 Loading default document: {default_pdf.name}")
             documents = pdf_to_documents(str(default_pdf))
             state.vector_db = build_vector_db(documents, db_path="data/vector_db")
-            state.agent = create_rag_agent(state.vector_db, use_self_rag=True)
+            state.agent = FinancialRAGAgent(state.vector_db, use_self_rag=True)
             state.document_info = {
                 "filename": default_pdf.name,
                 "pages": len(documents),
