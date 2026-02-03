@@ -32,30 +32,30 @@ class CRAGRetriever:
         self.batch_grader_prompt = ChatPromptTemplate.from_messages([
             ("system", """You are a Strategic Financial Analyst with expertise in corporate finance, investment analysis, and predictive modeling.
 
-Your role extends beyond data retrieval to encompass:
+            Your role extends beyond data retrieval to encompass:
 
-**Core Analytical Framework:**
-1. **Historical Performance Analysis**
-   - Identify trends in revenue, net income, operating costs, and margins
-   - Recognize cyclical patterns and anomalies in financial metrics
-   - Track year-over-year and quarter-over-quarter performance variations
+            **Core Analytical Framework:**
+            1. **Historical Performance Analysis**
+            - Identify trends in revenue, net income, operating costs, and margins
+            - Recognize cyclical patterns and anomalies in financial metrics
+            - Track year-over-year and quarter-over-quarter performance variations
 
-2. **Predictive Signal Detection**
-   - Correlate past strategic decisions (M&A, CapEx, R&D) with subsequent financial outcomes
-   - Identify leading indicators that preceded significant performance shifts
-   - Assess how market events, policy changes, or corporate announcements impacted results
+            2. **Predictive Signal Detection**
+            - Correlate past strategic decisions (M&A, CapEx, R&D) with subsequent financial outcomes
+            - Identify leading indicators that preceded significant performance shifts
+            - Assess how market events, policy changes, or corporate announcements impacted results
 
-3. **Strategic Context Evaluation**
-   - Understand the business logic behind financial changes
-   - Connect operational decisions to financial performance
-   - Evaluate risk factors and their potential future impact
+            3. **Strategic Context Evaluation**
+            - Understand the business logic behind financial changes
+            - Connect operational decisions to financial performance
+            - Evaluate risk factors and their potential future impact
 
-**Document Relevance Criteria:**
-- **Highly Relevant**: Contains quantitative data, trends, or context directly applicable to answering the question
-- **Moderately Relevant**: Provides supporting context or partial data that contributes to analysis
-- **Irrelevant**: Lacks financial substance or connection to the analytical requirements
+            **Document Relevance Criteria:**
+            - **Highly Relevant**: Contains quantitative data, trends, or context directly applicable to answering the question
+            - **Moderately Relevant**: Provides supporting context or partial data that contributes to analysis
+            - **Irrelevant**: Lacks financial substance or connection to the analytical requirements
 
-Classify the document as: 'Highly Relevant', 'Moderately Relevant', or 'Irrelevant'."""),
+            Classify the document as: 'Highly Relevant', 'Moderately Relevant', or 'Irrelevant'."""),
             ("human", "Question: {question}\n\nDocument: {document}\n\nAssessment:")
         ])
     
@@ -66,7 +66,7 @@ Classify the document as: 'Highly Relevant', 'Moderately Relevant', or 'Irreleva
         
         # Format all documents with numbers
         docs_text = "\n\n".join([
-            f"Document {i+1} [Page {doc.metadata.get('page', '?')}]:\n{doc.page_content[:500]}"
+            f"Document {i+1} [Page {doc.metadata.get('page')}]:\n{doc.page_content[:500]}"
             for i, doc in enumerate(documents)
         ])
         
@@ -74,7 +74,7 @@ Classify the document as: 'Highly Relevant', 'Moderately Relevant', or 'Irreleva
             response = self.llm.invoke(
                 self.batch_grader_prompt.format(
                     question=question, 
-                    documents=docs_text
+                    document=docs_text
                 )
             )
             
@@ -150,21 +150,24 @@ class SelfRAGVerifier:
         self.llm = llm
         
         self.verification_prompt = ChatPromptTemplate.from_messages([
-            ("system", """You are a meticulous fact-checker for financial analysis.
-            
-            Verify if the provided answer is:
-            1. Supported by the source documents
-            2. Accurate in its numerical claims
-            3. Properly cited with page references
-            
-            Rate the answer on a scale of 1-10 and provide specific notes on any issues."""),
+            ("system", """You are a meticulous financial fact-checker. 
+
+            Compare the 'Answer' against the 'Source Documents'.
+            Your output must be very brief and follow this structure:
+
+            1. Score: [X/10]
+            2. Verification: [Pass/Fail] (Are numbers accurate and supported?)
+            3. Missing Refs: [List page numbers if missing, otherwise 'None']
+            4. Critical Notes: [One sentence maximum on errors, or 'No issues']
+
+            Keep it concise. No preamble or conversational filler."""),
             ("human", """Question: {question}
             
-Answer: {answer}
+            Answer: {answer}
 
-Sources: {sources}
+            Sources: {sources}
 
-Verification Assessment:""")
+            Verification Assessment:""")
         ])
     
     def verify_answer(self, question: str, answer: str, sources: List[str]) -> Dict[str, Any]:
@@ -185,7 +188,7 @@ Verification Assessment:""")
             return {
                 "rating": rating,
                 "passed": rating >= 7,
-                "notes": response.content[:100]  # Shortened from 200
+                "notes": response.content[:300]  # Shortened from 200
             }
         except Exception as e:
             print(f"⚠️ Verification error: {e}")
@@ -222,119 +225,71 @@ class FinancialDataExtractor:
         
         # Combine all doc content
         combined_text = "\n\n".join([
-            f"[Page {doc.metadata.get('page', '?')} | Sheet: {doc.metadata.get('sheet_name', 'N/A')}]\n{doc.page_content}"
+            f"[Page {doc.metadata.get('page')} | Sheet: {doc.metadata.get('sheet_name', 'N/A')}]\n{doc.page_content}"
             for doc in docs
         ])
         
         # Use LLM to extract structured data
         extraction_prompt = ChatPromptTemplate.from_messages([
-            ("system", """You are a financial data extraction specialist.
-            
-            Extract structured numerical data from the provided text.
-            Return ONLY a valid JSON array of objects. No explanations, no markdown, no ```json``` blocks.
-            
-            Rules:
-            - Each object must have a "label" key and a "value" key
-            - "value" must be a number (remove commas, currency symbols, and units)
-            - If you find quarterly data, use labels like "Q1 2025", "Q2 2025"
-            - If you find yearly data, use labels like "2024", "2025"
-            - NEVER include empty values or null values
-            - Extract as many data points as possible
-            - Only extract data relevant to the query
-            
-            Example output:
-            [{"label": "Q1 2025", "value": 25000}, {"label": "Q2 2025", "value": 28000}]
-            """),
-            ("human", f"Query: {query}\n\nText:\n{combined_text}\n\nExtracted JSON:")
+            ("system", """Extract structured financial data. 
+            RULES: 
+            1. ONLY extract items relevant to the query. 
+            2. Each object MUST have: "label", "value", "currency", "suggestion".
+            3. "value" must be a CLEAN number. 
+            4. If no new/relevant data found, return empty list [].
+            5. STRICT: NO markdown, ONLY JSON array."""),
+            ("human", "Query: {query}\n\nContext:\n{combined_text}\n\nJSON:")
         ])
         
         try:
-            response = self.llm.invoke(extraction_prompt)
+            response = self.llm.invoke(extraction_prompt.format_messages(
+                query=query, 
+                combined_text=combined_text
+            ))
             raw = response.content.strip()
             
-            # Clean up the response - remove markdown code blocks if present
+            # Clean up markdown code blocks
             raw = re.sub(r'```(?:json)?\s*', '', raw)
             raw = raw.replace('```', '').strip()
             
-            # Parse JSON
+            # Capture only the JSON array part
             data = json.loads(raw)
             
-            if isinstance(data, list) and len(data) > 0:
-                # Filter out empty or invalid entries
+            if isinstance(data, list):
                 valid_data = []
                 for item in data:
-                    if isinstance(item, dict) and 'label' in item and 'value' in item:
-                        label = str(item['label']).strip()
+                    if not isinstance(item, dict): continue
+                    
+                    # Convert keys to lowercase for consistency
+                    item_clean = {str(k).lower().strip(): v for k, v in item.items()}
+                    
+                    # Try to extract required fields
+                    label = item_clean.get('label') or item_clean.get('name') or item_clean.get('description')
+                    value = item_clean.get('value') or item_clean.get('amount')
+                    currency = item_clean.get('currency', 'SAR')
+                    suggestion = item_clean.get('suggestion', 'No specific advice')
+
+                    if label and value is not None:
                         try:
-                            value = float(str(item['value']).strip())
-                            if label and value >= 0:  # Only keep valid entries
-                                valid_data.append({'label': label, 'value': value})
-                        except (ValueError, TypeError):
-                            continue
+                            # Clean the value to ensure it's numeric
+                            clean_val = float(str(value).replace(',', '').replace('$', '').strip())
+                            valid_data.append({
+                                'label': str(label),
+                                'value': clean_val,
+                                'currency': str(currency),
+                                'suggestion': str(suggestion)
+                            })
+                        except: continue
                 
                 if valid_data:
-                    df = pd.DataFrame(valid_data)
-                    print(f"✅ Extracted {len(df)} valid data points using LLM")
-                    return df
-            
-        except json.JSONDecodeError as e:
-            print(f"⚠️ JSON parsing error: {e}")
-            print(f"   Raw response: {raw[:200]}")
+                    return pd.DataFrame(valid_data).drop_duplicates(subset=['label'])
+
         except Exception as e:
-            print(f"⚠️ LLM extraction error: {e}")
+            print(f"❌ Detailed Debug: Error Type: {type(e).__name__}, Message: {str(e)}")
         
         # Fallback: Manual regex parsing
         print("📌 Falling back to regex extraction...")
-        return self._regex_extract(combined_text)
-    
-    def _regex_extract(self, text: str) -> pd.DataFrame:
-        """Fallback regex-based extraction for common financial patterns"""
-        data = []
-        
-        # Pattern 1: "Q1 2025 ... $25.0 billion" or "Q1 2025: 25,000"
-        quarterly_pattern = r'(Q[1-4]\s*\d{4})[^\d]*?([\d,]+\.?\d*)\s*(?:billion|million|bn|mn|مليار|مليون)?'
-        for match in re.finditer(quarterly_pattern, text, re.IGNORECASE):
-            label = match.group(1).strip()
-            try:
-                value = float(match.group(2).replace(',', ''))
-                if label and value >= 0:
-                    data.append({"label": label, "value": value})
-            except (ValueError, AttributeError):
-                continue
-        
-        # Pattern 2: "Label: $value" or "Label | value"
-        label_value_pattern = r'([A-Za-z\s]+(?:income|revenue|profit|cost|expense|cash|flow|ratio|margin|dividend|EBITDA|CapEx))[:\|]\s*\$?([\d,]+\.?\d*)'
-        for match in re.finditer(label_value_pattern, text, re.IGNORECASE):
-            label = match.group(1).strip()
-            try:
-                value = float(match.group(2).replace(',', ''))
-                if label and value >= 0:
-                    data.append({"label": label, "value": value})
-            except (ValueError, AttributeError):
-                continue
-        
-        # Pattern 3: Year-based "2023 ... value"
-        year_pattern = r'(20\d{2})[^\d]*?([\d,]+\.?\d*)\s*(?:billion|million|bn|mn)?'
-        for match in re.finditer(year_pattern, text):
-            label = match.group(1)
-            try:
-                value = float(match.group(2).replace(',', ''))
-                if value > 0:
-                    data.append({"label": label, "value": value})
-            except (ValueError, AttributeError):
-                continue
-        
-        if data:
-            df = pd.DataFrame(data)
-            # Remove duplicates
-            df = df.drop_duplicates(subset=['label'])
-            # Ensure value is numeric and drop any NaN
-            df['value'] = pd.to_numeric(df['value'], errors='coerce')
-            df = df.dropna(subset=['value'])
-            print(f"✅ Regex extracted {len(df)} valid data points")
-            return df if len(df) > 0 else pd.DataFrame()
-        
-        return pd.DataFrame()
+        return pd.DataFrame(columns=['label', 'value', 'currency', 'suggestion'])
 
 class ChartGenerator:
     """Generate Plotly charts with financial styling"""
@@ -371,7 +326,7 @@ class ChartGenerator:
     def create_pie_chart(df: pd.DataFrame, names: str, values: str, title: str) -> go.Figure:
         fig = px.pie(df, names=names, values=values, title=title,
                      template="plotly_white", color_discrete_sequence=ChartGenerator.COLORS)
-        fig.update_traces(textposition='inside', textinfo='percent+label')
+        fig.update_traces(textposition='inside', textinfo='percent')
         fig.update_layout(height=500, title_font_size=20)
         return fig
     
@@ -410,93 +365,149 @@ class ChartGenerator:
 # ============================================================================
 # 4. OPTIMIZED Agentic RAG - Fast & Efficient
 # ============================================================================
-##
+
 class FinancialRAGAgent:
     """Extract financial data from documents for visualization"""
     
     def __init__(self, vector_db):
         self.vector_db = vector_db
-    
-    def extract_data_from_query(self, query: str, k: int = 8) -> pd.DataFrame:
+
+    def process_query(self, query: str) -> dict:
         """
-        Extract numerical data using LLM-assisted parsing
+        Main entry point: runs the full pipeline from query to chart-ready data.
         """
         api_key = os.getenv("GROQ_API_KEY")
-        
-        # Use faster model configuration
         self.llm = ChatGroq(
             model="llama-3.3-70b-versatile",
             api_key=SecretStr(api_key) if api_key else None,
             temperature=0,
         )
 
-        docs = self.vector_db.similarity_search(query, k=k)
-        
-        if not docs:
-            return pd.DataFrame()
-        
-        combined_text = "\n\n".join([
-            f"[Page {doc.metadata.get('page', '?')} | Sheet: {doc.metadata.get('sheet_name', 'N/A')}]\n{doc.page_content}"
-            for doc in docs
+        # 1. Retrieve and grade documents using CRAG
+        retriever = CRAGRetriever(self.vector_db, self.llm)
+        relevant_results = retriever.get_relevant_documents(query, k=5)
+
+        relevant_docs = [r["document"] for r in relevant_results]
+
+        if not relevant_docs:
+            return {
+                "answer": "No relevant documents found for your query.",
+                "source_pages": [],
+                "confidence": "Low",
+                "verification": None,
+                "relevant_docs_count": 0,
+                "chart": None
+            }
+
+        # 2. Build context from relevant docs
+        context = "\n\n".join([
+            f"[Page {doc.metadata.get('page')}]\n{doc.page_content}"
+            for doc in relevant_docs
         ])
-        
-        extraction_prompt = ChatPromptTemplate.from_messages([
-            ("system", """You are a financial data extraction specialist.
-            
-            Extract structured numerical data from the provided text.
-            Return ONLY a valid JSON array of objects. No explanations, no markdown, no ```json``` blocks.
-            
-            STRICT Rules:
-            - Each object must have a "label" key and a "value" key
-            - "label" must NEVER be empty or null
-            - "value" must ALWAYS be a valid number (no empty strings, no null, no text)
-            - Remove commas, currency symbols (﷼, $), and units (billion, million) from values
-            - If you find quarterly data, use labels like "Q1 2025", "Q2 2025"
-            - If you find yearly data, use labels like "2024", "2025"
-            - Only include entries where BOTH label and value are valid
-            - Extract as many data points as possible
-            - Keep your answer to 10-12 sentences maximum
-            
-            WRONG:
-            [{"label": "", "value": ""}, {"label": "Revenue", "value": null}]
-            
-            CORRECT:
-            [{"label": "Q1 2025", "value": 25000}, {"label": "Q2 2025", "value": 28000}]
+
+        source_pages = list(set([
+            str(doc.metadata.get('page')) for doc in relevant_docs
+        ]))
+
+        # 3. Generate the answer using LLM
+        answer_prompt = ChatPromptTemplate.from_messages([
+            ("system", """You are a Conversational Strategic Financial Advisor. 
+
+            ### CONVERSATIONAL LOGIC:
+            - Use the provided 'Chat History' to understand the context of the current question.
+            - If the user asks a follow-up (e.g., "Why?"), refer to the previous data extracted.
+
+            ### INSTRUCTIONS:
+            1. **Extraction (JSON)**: Provide a clean JSON array only if new data points are found.
+            2. **Analysis**: Provide a brief, professional response regarding the data.
+            3. **Recommendations**: Offer 2 actionable suggestions.
+            4. **Currency**: Always include the currency (e.g., SAR, USD).
+
+            ### OUTPUT FORMAT:
+            [JSON Data if applicable]
+
+            [Your conversational answer]
+
+            #### Suggestions
+            - [Suggestion 1]
+            - [Suggestion 2]
             """),
-            ("human", f"Query: {query}\n\nText:\n{combined_text}\n\nExtracted JSON:")
+            ("human", "Chat History: {chat_history}\n\nQuestion: {query}\n\nContext: {context}")
         ])
+
+        chat_history = []
         
         try:
-            response = self.llm.invoke(extraction_prompt)
-            raw = response.content.strip()
-            
-            # Clean up markdown code blocks
-            raw = re.sub(r'```(?:json)?\s*', '', raw)
-            raw = raw.replace('```', '').strip()
-            
-            # Sometimes LLM adds text before/after the JSON array
-            # Extract only the JSON array part
-            json_match = re.search(r'\[.*\]', raw, re.DOTALL)
-            if json_match:
-                raw = json_match.group(0)
-            
-            data = json.loads(raw)
-            
-            if isinstance(data, list) and len(data) > 0:
-                df = self._clean_dataframe(data)
-                if not df.empty:
-                    print(f"✅ Extracted {len(df)} valid data points using LLM")
-                    return df
-            
-        except json.JSONDecodeError as e:
-            print(f"⚠️ JSON parsing error: {e}")
-            print(f"   Raw response: {raw[:200]}")
+            answer_response = self.llm.invoke(answer_prompt.format_messages(query=query, context=context, chat_history=chat_history))
+            answer = answer_response.content.strip()
         except Exception as e:
-            print(f"⚠️ LLM extraction error: {e}")
-        
-        # Fallback
-        print("📌 Falling back to regex extraction...")
-        return self._regex_extract(combined_text)
+            print(f"⚠️ Answer generation error: {e}")
+            answer = "Unable to generate an answer at this time."
+
+        # 4. Verification using Self-RAG
+        verifier = SelfRAGVerifier(self.llm)
+        verification = verifier.verify_answer(query, answer, [doc.page_content for doc in relevant_docs])
+
+        confidence = "High" if verification.get("rating", 0) >= 8 else "Medium" if verification.get("rating", 0) >= 5 else "Low"
+
+        # 5. Check if query is visualization-related and generate chart
+        chart_data = None
+        viz_keywords = ["chart", "visualiz", "plot", "graph", "draw", "pie", "bar", "line", "trend"]
+        if any(kw in query.lower() for kw in viz_keywords):
+            try:
+                extractor = FinancialDataExtractor(self.vector_db, self.llm)
+                df = extractor.extract_data_from_query(query)
+                print(f"📊 DataFrame for visualization:\n{df.head()}")
+
+                if not df.empty:
+                    chart_type = self._suggest_chart_type(query, df)
+
+                    # Generate the correct chart
+                    if chart_type == "bar":
+                        fig = ChartGenerator.create_bar_chart(df, x="label", y="value", title=query)
+                    elif chart_type == "line":
+                        fig = ChartGenerator.create_line_chart(df, x="label", y="value", title=query)
+                    elif chart_type == "pie":
+                        fig = ChartGenerator.create_pie_chart(df, names="label", values="value", title=query)
+                    elif chart_type == "scatter":
+                        fig = ChartGenerator.create_scatter_chart(df, x="label", y="value", title=query)
+                    else:
+                        fig = ChartGenerator.create_area_chart(df, x="label", y="value", title=query)
+
+                    # Serialize the chart to JSON so it can be stored in chat history
+                    chart_data = {
+                        "success": True,
+                        "chart": fig.to_json(),
+                        "title": query,
+                        "data_preview": df.to_dict(orient="records")
+                    }
+            except Exception as e:
+                print(f"⚠️ Chart generation error: {e}")
+                chart_data = {"success": False, "error": str(e)}
+
+        # 6. Return everything the UI expects
+        return {
+            "answer": answer,
+            "source_pages": source_pages,
+            "confidence": confidence,
+            "verification": verification,
+            "relevant_docs_count": len(relevant_docs),
+            "chart": chart_data
+        }
+    
+    def _suggest_chart_type(self, query: str, df: pd.DataFrame) -> str:
+        """
+        Heuristic: pick chart type based on query keywords or data shape.
+        """
+        query_lower = query.lower()
+
+        if any(kw in query_lower for kw in ["trend", "over time", "quarterly", "yearly", "monthly"]):
+            return "line"
+        if any(kw in query_lower for kw in ["compare", "comparison", "breakdown", "share", "distribution"]):
+            return "pie" if len(df) <= 6 else "bar"
+
+        # Default: bar chart works for most financial comparisons
+        return "bar"
     
     def _clean_dataframe(self, data: list) -> pd.DataFrame:
         """
@@ -549,60 +560,3 @@ class FinancialRAGAgent:
         df = df.drop_duplicates(subset=['label'])
         
         return df
-    
-    def _regex_extract(self, text: str) -> pd.DataFrame:
-        """Fallback regex-based extraction"""
-        data = []
-        
-        # Pattern 1: Quarterly "Q1 2025 ... number"
-        quarterly_pattern = r'(Q[1-4]\s*\d{4})[^\d]*?([\d,]+\.?\d*)\s*(?:billion|million|bn|mn|مليار|مليون)?'
-        for match in re.finditer(quarterly_pattern, text, re.IGNORECASE):
-            label = match.group(1).strip()
-            value_str = match.group(2).replace(',', '').strip()
-            if not value_str:
-                continue
-            try:
-                value = float(value_str)
-                data.append({"label": label, "value": value})
-            except ValueError:
-                continue
-        
-        # Pattern 2: "Financial Label: value"
-        label_value_pattern = r'([A-Za-z\s]+(?:income|revenue|profit|cost|expense|cash|flow|ratio|margin|dividend|EBITDA|CapEx))[:\|]\s*\$?([\d,]+\.?\d*)'
-        for match in re.finditer(label_value_pattern, text, re.IGNORECASE):
-            label = match.group(1).strip()
-            value_str = match.group(2).replace(',', '').strip()
-            if not value_str or not label:
-                continue
-            try:
-                value = float(value_str)
-                data.append({"label": label, "value": value})
-            except ValueError:
-                continue
-        
-        # Pattern 3: Year-based "2023 ... value"
-        year_pattern = r'(20\d{2})[^\d]*?([\d,]+\.?\d*)\s*(?:billion|million|bn|mn)?'
-        for match in re.finditer(year_pattern, text):
-            label = match.group(1).strip()
-            value_str = match.group(2).replace(',', '').strip()
-            if not value_str:
-                continue
-            try:
-                value = float(value_str)
-                if value > 0:
-                    data.append({"label": label, "value": value})
-            except ValueError:
-                continue
-        
-        if not data:
-            return pd.DataFrame()
-        
-        df = pd.DataFrame(data)
-        df = df.drop_duplicates(subset=['label'])
-        df['value'] = pd.to_numeric(df['value'], errors='coerce')
-        df = df.dropna(subset=['value', 'label'])
-        # Remove rows where label is empty string
-        df = df[df['label'].str.strip() != '']
-        
-        print(f"✅ Regex extracted {len(df)} valid data points")
-        return df if len(df) > 0 else pd.DataFrame()

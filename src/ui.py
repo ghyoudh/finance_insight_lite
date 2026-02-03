@@ -101,7 +101,7 @@ if 'pending_question' not in st.session_state:
 with st.sidebar:
     col1, col2 = st.columns([2.5, 4]) # Adjust ratios for width
     with col1:
-        st.image("./images/logo.png", use_container_width=True)
+        st.image("./images/logo.png", width='stretch')
     with col2:
         st.markdown('<p class="main-header" style="font-size:25px; font-weight:bold;">Finance Insight Lite</p>', unsafe_allow_html=True)
 
@@ -133,7 +133,7 @@ with st.sidebar:
         st.success(f"✅ Uploaded {len(uploaded_file_paths)} file(s) successfully!")
 
         # Process Document Button
-        process_btn = st.button("🚀 Process All Documents", use_container_width=True)
+        process_btn = st.button("🚀 Process All Documents", width='stretch')
 
         if process_btn:
             with st.spinner("Processing files..."):
@@ -232,7 +232,7 @@ with st.sidebar:
         cache_path = Path("data/cache")
         col1, col2 = st.columns([3, 1])
         with col1:
-            if st.button("Clear Cache", use_container_width=True):
+            if st.button("Clear Cache", width='stretch'):
                 clear_cache()
                 st.success("✅ Cleared!")
                 st.rerun()
@@ -277,8 +277,8 @@ for i, chat in enumerate(st.session_state.chat_history):
                 if chart_json:
                     try:
                         fig = go.Figure(json.loads(chart_json))
-                        st.plotly_chart(fig, use_container_width=True, key=f"chart_{i}")
-                        st.success(f"✅ Chart: {chart_data.get('title', 'Visualization')}")
+                        st.plotly_chart(fig, width='stretch', key=f"chart_{i}")
+                        print(f"✅ Chart: {chart_data.get('title', 'Visualization')}")
                     except Exception as e:
                         st.error(f"⚠️ Error rendering chart: {e}")
                 else:
@@ -291,7 +291,7 @@ for i, chat in enumerate(st.session_state.chat_history):
                         with st.expander("📊 View Data Table"):
                             try:
                                 df = pd.DataFrame(data_preview)
-                                st.dataframe(df, use_container_width=True)
+                                st.dataframe(df, width='stretch')
                             except Exception as e:
                                 st.error(f"⚠️ Error displaying table: {e}")
                 
@@ -361,6 +361,7 @@ if st.session_state.pending_question:
         # Process the question
         with st.spinner("🤔 Thinking..."):
             result = st.session_state.agent.process_query(question)
+            st.write("DEBUG result:", result)
 
         # Save to history
         chat_entry = {
@@ -384,6 +385,7 @@ if user_question:
     # Process query
     with st.spinner("🤔 Thinking..."):
         result = st.session_state.agent.process_query(user_question)
+        st.write("DEBUG result:", result)
 
     # Save to history
     chat_entry = {
