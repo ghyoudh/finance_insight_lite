@@ -30,7 +30,10 @@ def build_vector_db(documents, db_path="./database"):
     )
 
     # Save to disk
-    vector_db.save_local(db_path)
+    if db_path:
+        vector_db.save_local(db_path)
+    else:
+        vector_db.save_local("faiss_index")
 
     print(f"✓ Vector database saved to: {db_path}")
 
