@@ -98,39 +98,77 @@ streamlit run src/ui.py
 
 # Opens at http://localhost:8501
 ```
+---
+
+## 🐳 Docker Deployment
+
+### Quick Start with Docker
+
+**Using Docker Compose (Recommended)**
+```bash
+# Create .env file with your GROQ_API_KEY
+docker-compose up -d --build
+```
+Access at: http://localhost:8501
+
+**Using Docker CLI**
+```bash
+docker build -t finance-insight-lite .
+docker run -d -p 8501:8501 -e GROQ_API_KEY=your_key finance-insight-lite
+```
+
+### Common Commands
+```bash
+# View logs
+docker-compose logs -f
+
+# Stop
+docker-compose down
+
+# Restart
+docker-compose restart
+```
+
+---
 
 ## 📁 Project Structure
 
 ```
 Finance_Insight_Lite/
+├── data/                    # Document storage and processing
+│   ├── cache/
+│   ├── database/
+│   ├── processed/
+│   ├── rew/
+│   ├── uploaded/
+│   └── vector_db/
+├── database/                # Local vector store indices
+├── images/                  # UI assets
+│   ├── chatbots_icon.png
+│   ├── logo.png
+│   └── user_icon.png
+├── node_modules/            # Node.js dependencies
 ├── src/
-│   ├── app.py                              # CLI entry point
-│   ├── ui.py                               # Streamlit web interface ⭐
-│   ├── ui_with_api.py                      # Alternative API interface
-│   ├── images/
-│   │   ├── logo.png
-│   │   ├── user_icon.png
-│   │   └── chatbots_icon.png
-│   ├── data/
-│   │   ├── uploaded/                       # User-uploaded files
-│   │   ├── cache/                          # Processed documents cache
-│   │   ├── processed/                      # Processed results
-│   │   └── vector_db/                      # Vector embeddings
-│   └── finance_insight_lite/
-│       ├── __init__.py
-│       ├── __pycache__/
-│       └── modules/
-│           ├── processor.py                # Document processing & caching
-│           ├── verctor_store.py            # Vector DB management
-│           └── rag_agent.py                # RAG agent implementation ⭐
-├── database/                               # Global vector store
-│   ├── chroma.sqlite3
-│   └── index.faiss
-├── requirements.txt
-├── pyproject.toml
+│   ├── finance_insight_lite/
+│   │   ├── modules/
+│   │   │   ├── processor.py
+│   │   │   ├── rag_agent.py        # RAG agent implementation ⭐
+│   │   │   └── verctor_store.py
+│   │   └── __init__.py
+│   ├── app.py               # CLI entry point
+│   └── ui.py                # Streamlit web interface ⭐
+├── .dockerignore            # Docker exclusion rules
+├── .env                     # Environment variables
+├── .gitignore               # Git exclusion rules
+├── docker-compose.yml       # Container orchestration
+├── Dockerfile               # Container configuration
+├── main.py                  # API entry point (FastAPI service) ⭐
+├── package-lock.json
 ├── package.json
-├── .env                                    # Create this file
-└── README.md
+├── pyproject.toml
+├── README.md
+├── requirements.txt
+└── uv.lock                  # UV dependency lockfile
 ```
 
 ## 🔧 Core Modules
