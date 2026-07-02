@@ -100,34 +100,7 @@ streamlit run src/ui.py
 ```
 ---
 
-## 🐳 Docker Deployment
 
-### Quick Start with Docker
-
-**Using Docker Compose (Recommended)**
-```bash
-# Create .env file with your GROQ_API_KEY
-docker-compose up -d --build
-```
-Access at: http://localhost:8501
-
-**Using Docker CLI**
-```bash
-docker build -t finance-insight-lite .
-docker run -d -p 8501:8501 -e GROQ_API_KEY=your_key finance-insight-lite
-```
-
-### Common Commands
-```bash
-# View logs
-docker-compose logs -f
-
-# Stop
-docker-compose down
-
-# Restart
-docker-compose restart
-```
 
 ---
 
@@ -157,11 +130,8 @@ Finance_Insight_Lite/
 │   │   └── __init__.py
 │   ├── app.py               # CLI entry point
 │   └── ui.py                # Streamlit web interface ⭐
-├── .dockerignore            # Docker exclusion rules
 ├── .env                     # Environment variables
 ├── .gitignore               # Git exclusion rules
-├── docker-compose.yml       # Container orchestration
-├── Dockerfile               # Container configuration
 ├── main.py                  # API entry point (FastAPI service) ⭐
 ├── package-lock.json
 ├── package.json
