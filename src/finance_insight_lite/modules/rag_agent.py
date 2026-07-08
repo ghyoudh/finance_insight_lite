@@ -12,6 +12,34 @@ import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
 import json
+from typing import List, Dict, Any, Literal
+
+ 
+# ============================================================================
+# Structured Output Schema 
+# ============================================================================
+
+class DocumentGrade(BaseModel):
+    """تقييم مستند واحد ضمن الدفعة"""
+    doc_index: int = Field(description="رقم المستند كما ورد في القائمة، يبدأ من 1")
+    relevance: Literal["Highly_Relevant", "Moderately_Relevant", "Irrelevant"] = Field(
+        description="التصنيف - يجب أن يكون واحداً من هذه القيم الثلاث بالضبط، بدون أي نص إضافي"
+    )
+    confidence: float = Field(
+        ge=0.0, le=1.0,
+        description="مستوى الثقة بالتصنيف من 0 إلى 1"
+    )
+    reason_brief: str = Field(
+        max_length=120,
+        description="سبب مختصر جداً (أقل من 15 كلمة) - يمكن أن يكون بالعربي أو الإنجليزي حسب لغة السؤال"
+    )
+ 
+ 
+class BatchGradeResponse(BaseModel):
+    """الاستجابة الكاملة لتقييم دفعة المستندات"""
+    grades: List[DocumentGrade] = Field(
+        description="قائمة تحتوي على تقييم لكل مستند، بنفس عدد المستندات المُدخلة بالضبط"
+    )
 
 
 # ============================================================================
@@ -20,125 +48,139 @@ import json
 
 class CRAGRetriever:
     """
-    High-performance Corrective RAG with batched document grading
+    Corrective RAG مع تقييم دفعي عبر Structured Output (لا يوجد Regex)
     """
-    
+ 
+    # حد أدنى للثقة - أي تقييم بثقة أقل من هذا يُعامل كـ Irrelevant تلقائياً
+    # (طبقة أمان إضافية: حتى لو صنّف النموذج المستند Relevant لكن بثقة ضعيفة،
+    # نفضّل نحجبه بدل ما نجازف بعرض بيانات مالية غير دقيقة)
+    MIN_CONFIDENCE_THRESHOLD = 0.6
+ 
     def __init__(self, vector_db, llm):
         self.vector_db = vector_db
         self.llm = llm
-        
-        # Simplified grading prompt for faster processing
-        # Merged grading prompt combining strategic depth with batch efficiency
+ 
+        self.structured_llm = self.llm.with_structured_output(BatchGradeResponse)
+ 
         self.batch_grader_prompt = ChatPromptTemplate.from_messages([
-            ("system", """You are a Strategic Financial Analyst with expertise in corporate finance, investment analysis, and predictive modeling.
-
-            Your role extends beyond data retrieval to encompass:
-
-            **Core Analytical Framework:**
-            1. **Historical Performance Analysis**
-            - Identify trends in revenue, net income, operating costs, and margins
-            - Recognize cyclical patterns and anomalies in financial metrics
-            - Track year-over-year and quarter-over-quarter performance variations
-
-            2. **Predictive Signal Detection**
-            - Correlate past strategic decisions (M&A, CapEx, R&D) with subsequent financial outcomes
-            - Identify leading indicators that preceded significant performance shifts
-            - Assess how market events, policy changes, or corporate announcements impacted results
-
-            3. **Strategic Context Evaluation**
-            - Understand the business logic behind financial changes
-            - Connect operational decisions to financial performance
-            - Evaluate risk factors and their potential future impact
-
-            **Document Relevance Criteria:**
-            - **Highly Relevant**: Contains quantitative data, trends, or context directly applicable to answering the question
-            - **Moderately Relevant**: Provides supporting context or partial data that contributes to analysis
-            - **Irrelevant**: Lacks financial substance or connection to the analytical requirements
-
-            Classify the document as: 'Highly Relevant', 'Moderately Relevant', or 'Irrelevant'."""),
-            ("human", "Question: {question}\n\nDocument: {document}\n\nAssessment:")
+            ("system", """You are a Strategic Financial Analyst grading document relevance.
+ 
+IMPORTANT - LANGUAGE HANDLING:
+- The question and documents may be in Arabic, English, or mixed.
+- Understand and reason about the content in whichever language it appears.
+- However, your OUTPUT is always structured via the provided schema (tool call).
+  The `relevance` field must ALWAYS be one of the three fixed English labels
+  exactly as given: Highly_Relevant, Moderately_Relevant, Irrelevant.
+  Never translate, paraphrase, or invent new labels for this field.
+- `reason_brief` may be written in the same language as the question (Arabic
+  question -> Arabic reason is fine), but keep it under 15 words.
+ 
+CRITICAL RULES:
+- Do NOT write any preamble, explanation, or free text outside the schema.
+- Return exactly one grade per document, in the same order given.
+- If you are not reasonably confident a document is relevant, classify it as
+  Irrelevant rather than guessing Moderately_Relevant. When uncertain, prefer
+  the stricter (less relevant) label.
+ 
+**Core Analytical Framework (for your reasoning, not for output format):**
+1. Historical Performance Analysis - trends in revenue, net income, margins
+2. Predictive Signal Detection - links between strategic decisions and outcomes
+3. Strategic Context Evaluation - business logic behind financial changes
+ 
+**Document Relevance Criteria:**
+- Highly_Relevant: contains quantitative data or context directly answering the question
+- Moderately_Relevant: partial/supporting context only
+- Irrelevant: no real financial substance connected to the question"""),
+            ("human", "Question: {question}\n\nDocuments:\n{document}\n\nGrade each document now via the schema.")
         ])
-    
+ 
     def batch_grade_documents(self, question: str, documents: List[Any]) -> List[bool]:
-        """Grade multiple documents in a single LLM call for speed"""
+        """
+        تقييم دفعي بدون Regex - يعتمد كلياً على Structured Output
+        """
         if not documents:
             return []
-        
-        # Format all documents with numbers
+ 
         docs_text = "\n\n".join([
-            f"Document {i+1} [Page {doc.metadata.get('page')}]:\n{doc.page_content[:500]}"
+            f"Document {i + 1} [Page {doc.metadata.get('page')}]:\n{doc.page_content[:1500]}"
             for i, doc in enumerate(documents)
         ])
-        
+ 
         try:
-            response = self.llm.invoke(
+            response: BatchGradeResponse = self.structured_llm.invoke(
                 self.batch_grader_prompt.format(
-                    question=question, 
+                    question=question,
                     document=docs_text
                 )
             )
-            
-            # Parse the response to get relevance for each document
-            content = response.content.upper()
+ 
+            # نبني خريطة doc_index -> grade لضمان الترتيب الصحيح
+            # حتى لو النموذج رجّع الترتيب بشكل مختلف
+            grade_map = {g.doc_index: g for g in response.grades}
+ 
             relevance_results = []
-            
-            for i in range(len(documents)):
-                # Look for document number and check if "RELEVANT" appears nearby
-                doc_pattern = f"(?:DOCUMENT\\s*{i+1}|{i+1}[.)]?).*?(RELEVANT|IRRELEVANT)"
-                match = re.search(doc_pattern, content, re.IGNORECASE | re.DOTALL)
-                
-                if match:
-                    is_relevant = "IRRELEVANT" not in match.group(1).upper()
-                else:
-                    # Fallback: check if "RELEVANT" appears more than "IRRELEVANT"
-                    is_relevant = "RELEVANT" in content and content.count("RELEVANT") > content.count("IRRELEVANT")
-                
+            for i in range(1, len(documents) + 1):
+                grade = grade_map.get(i)
+ 
+                if grade is None:
+                    # النموذج ما رجّع تقييم لهذا المستند -> فشل آمن: نحجبه
+                    print(f"⚠️ لا يوجد تقييم للمستند {i}, سيُحجب احترازياً")
+                    relevance_results.append(False)
+                    continue
+ 
+                is_relevant = (
+                    grade.relevance in ("Highly_Relevant", "Moderately_Relevant")
+                    and grade.confidence >= self.MIN_CONFIDENCE_THRESHOLD
+                )
                 relevance_results.append(is_relevant)
-            
+ 
             return relevance_results
-            
+ 
         except Exception as e:
-            print(f"⚠️ Batch grading error: {e}, marking all as relevant")
-            return [True] * len(documents)
-
+            # ✅ التصحيح الأهم: Fail-Closed وليس Fail-Open
+            # القديم: return [True] * len(documents)  <- يمرر كل شيء وقت الخطأ (خطر)
+            # الجديد: نحجب الكل وقت الخطأ، ونعتمد على fallback top-2 الموجود
+            #         في get_relevant_documents لتفادي شاشة فاضية بالكامل
+            print(f"❌ خطأ في التقييم الدفعي: {e} — سيتم حجب كل المستندات احترازياً")
+            return [False] * len(documents)
+ 
     def get_relevant_documents(self, question: str, k: int = 5) -> List[Dict]:
         """
-        Fast retrieval with batch grading
-        
+        استرجاع سريع مع تقييم دفعي آمن
+ 
         Args:
-            question: The financial query
-            k: Number of documents to retrieve (default: 5)
-        
+            question: السؤال المالي
+            k: عدد المستندات المراد استرجاعها (افتراضي: 5)
+ 
         Returns:
-            List of relevant documents
+            قائمة المستندات ذات الصلة
         """
-        print(f"🔍 Retrieving {k} documents...")
-
+        print(f"🔍 استرجاع {k} مستندات...")
+ 
         initial_docs = self.vector_db.similarity_search(question, k=k)
-        
+ 
         if not initial_docs:
             return []
-        
-        # Batch grade all documents at once (much faster!)
+ 
         relevance_flags = self.batch_grade_documents(question, initial_docs)
-        
-        # Filter to only relevant documents
+ 
         relevant_results = [
             {"document": doc, "relevant": True}
             for doc, is_relevant in zip(initial_docs, relevance_flags)
             if is_relevant
         ]
-        
-        print(f"📊 Total relevant: {len(relevant_results)}/{len(initial_docs)}")
-
-        # Fallback: If nothing is relevant, return top 2
+ 
+        print(f"📊 عدد المستندات ذات الصلة: {len(relevant_results)}/{len(initial_docs)}")
+ 
+        # هذا fallback مختلف عن fail-open: هنا فعلاً ما لقينا شيء relevant
+        # (بعد تقييم حقيقي، مو بسبب خطأ تقني) فنرجع top-2 كحل احتياطي
+        # حتى ما تطلع للمستخدم صفحة فاضية بالكامل
         if not relevant_results:
-            print("⚠️ No relevant docs found, using top 2 as fallback")
+            print("⚠️ لم يُعثر على مستندات ذات صلة، استخدام أفضل 2 كحل احتياطي")
             return [{"document": d, "relevant": True} for d in initial_docs[:2]]
-
+ 
         return relevant_results
-
-
+    
 # ============================================================================
 # 2. OPTIONAL Self-RAG - Lightweight Verification
 # ============================================================================
