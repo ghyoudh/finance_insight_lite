@@ -414,7 +414,7 @@ class FinancialRAGAgent:
     def __init__(self, vector_db):
         self.vector_db = vector_db
 
-    def process_query(self, query: str) -> dict:
+    def process_query(self, query: str , chat_history: list = None) -> dict:
         """
         Main entry point: runs the full pipeline from query to chart-ready data.
         """
@@ -477,7 +477,7 @@ class FinancialRAGAgent:
             ("human", "Chat History: {chat_history}\n\nQuestion: {query}\n\nContext: {context}")
         ])
 
-        chat_history = []
+        if chat_history is None: chat_history = []
         
         try:
             answer_response = self.llm.invoke(answer_prompt.format_messages(query=query, context=context, chat_history=chat_history))
