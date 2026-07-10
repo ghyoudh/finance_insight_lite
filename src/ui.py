@@ -9,6 +9,7 @@ from finance_insight_lite.modules.processor import load_documents_fastest, clear
 import plotly.graph_objects as go
 import json
 import pandas as pd
+import chat_db
 
 # Load environment variables
 project_root = Path(__file__).parent.parent
@@ -31,6 +32,10 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+# --- Persistent chat history: init DB + resolve this browser tab's session id ---
+chat_db.init_db()
+session_id = chat_db.get_or_create_session_id(st)
 
 # Custom CSS
 st.markdown("""
@@ -91,7 +96,7 @@ st.markdown("""
 if 'agent' not in st.session_state:
     st.session_state.agent = None
 if 'chat_history' not in st.session_state:
-    st.session_state.chat_history = []
+    st.session_state.chat_history = chat_db.load_history(session_id)
 if 'vector_db' not in st.session_state:
     st.session_state.vector_db = None
 if 'pending_question' not in st.session_state:
@@ -244,6 +249,7 @@ with st.sidebar:
     # Clear history
     if st.button("🗑️ Clear Chat History"):
         st.session_state.chat_history = []
+        chat_db.clear_session(session_id)
         st.rerun()
 
     st.divider()
@@ -374,6 +380,7 @@ if st.session_state.pending_question:
             'chart': result.get('chart')  # Use chart from result
         }
         st.session_state.chat_history.append(chat_entry)
+        chat_db.save_entry(session_id, chat_entry)
         st.rerun()
 
 # Process regular chat input
@@ -398,4 +405,5 @@ if user_question:
         'chart': result.get('chart')  # Use chart from result
     }
     st.session_state.chat_history.append(chat_entry)
+    chat_db.save_entry(session_id, chat_entry)
     st.rerun()
