@@ -10,7 +10,7 @@ def build_vector_db(documents, db_path="./database"):
 
     # Split documents into chunks while preserving metadata
     text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=1000,
+        chunk_size=1500,
         chunk_overlap=100,
         length_function=len,
     )
