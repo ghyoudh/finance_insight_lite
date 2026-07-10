@@ -360,7 +360,7 @@ if st.session_state.pending_question:
     else:
         # Process the question
         with st.spinner("🤔 Thinking..."):
-            result = st.session_state.agent.process_query(question)
+            result = st.session_state.agent.process_query(question, chat_history=st.session_state.chat_history)
             st.write("DEBUG result:", result)
 
         # Save to history
@@ -384,7 +384,7 @@ if user_question:
 
     # Process query
     with st.spinner("🤔 Thinking..."):
-        result = st.session_state.agent.process_query(user_question)
+        result = st.session_state.agent.process_query(user_question, chat_history=st.session_state.chat_history)
         st.write("DEBUG result:", result)
 
     # Save to history
