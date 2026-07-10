@@ -153,7 +153,7 @@ def pdf_to_documents_fast(pdf_path):
 # OPTIMIZATION 4: Smart Excel Processing
 # ============================================================================
 
-def excel_to_documents_optimized(excel_path, sheet_name=None, chunk_size=1000):
+def excel_to_documents_optimized(excel_path, sheet_name=None, chunk_size=1500):
     """
     Optimized Excel loading with chunking for large files
     
