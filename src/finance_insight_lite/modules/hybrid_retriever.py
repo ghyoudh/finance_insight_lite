@@ -1,0 +1,129 @@
+import re
+from typing import Any, Dict, List, Optional
+
+import numpy as np
+from rank_bm25 import BM25Okapi
+
+
+# ============================================================================
+# Hybrid Retriever — BM25 (لفظي) + Vector Search (دلالي) عبر RRF
+# ============================================================================
+#
+# يدعم الاسترجاع بعدة صياغات للسؤال بنفس الوقت (متكامل مع QueryExpander)،
+# ويدمج كل النتائج بـ Reciprocal Rank Fusion واحد موحّد قبل ما تدخل على
+# CRAGRetriever للفلترة الدلالية النهائية.
+
+
+def _tokenize(text: str) -> List[str]:
+    """
+    تقسيم بسيط يدعم عربي/إنجليزي:
+    - يشيل التشكيل العربي (تنوين، فتحة، ضمة...الخ) عشان ما يأثر بالتطابق
+    - يشيل علامات الترقيم
+    - يفكك على المسافات
+    ملاحظة: لو محتواك عربي بكثافة عالية، فكّر تستبدل هذا لاحقاً بمُجذّع
+    (stemmer) عربي مخصص مثل ISRIStemmer أو camel-tools لتحسين إضافي.
+    """
+    text = re.sub(r'[\u064B-\u065F\u0670]', '', text)  # إزالة التشكيل
+    text = re.sub(r'[^\w\s]', ' ', text, flags=re.UNICODE)
+    return text.lower().split()
+
+
+class HybridRetriever:
+    """
+    يبني فهرس BM25 مرة وحدة فوق نفس الـ chunks اللي بُني منها الـ FAISS
+    vector_db، وبعدين يدمج نتائج البحث اللفظي والدلالي عبر RRF.
+
+    مهم: `documents` لازم تكون نفس قائمة الـ Document objects (بعد الـ
+    chunking) اللي استُخدمت لبناء الـ vector_db بالضبط — عشان النتائج
+    تتطابق. أسهل طريقة: خزّنها وقت `build_vector_db` (مثلاً كـ pickle
+    بجانب الـ FAISS index) وحمّلها هنا.
+    """
+
+    def __init__(self, vector_db, documents: List[Any], rrf_k: int = 60):
+        self.vector_db = vector_db
+        self.documents = documents
+        self.rrf_k = rrf_k
+
+        tokenized_corpus = [_tokenize(doc.page_content) for doc in documents]
+        self.bm25 = BM25Okapi(tokenized_corpus)
+
+        self._doc_keys = [self._make_key(doc, i) for i, doc in enumerate(documents)]
+
+    @staticmethod
+    def _make_key(doc, fallback_idx: int) -> str:
+        meta = doc.metadata or {}
+        source = meta.get("source", "")
+        page = meta.get("page", meta.get("row", fallback_idx))
+        sheet = meta.get("sheet_name", "")
+        return f"{source}|{sheet}|{page}|{fallback_idx}"
+
+    def _bm25_ranked_indices(self, query: str, top_n: int) -> List[int]:
+        scores = self.bm25.get_scores(_tokenize(query))
+        if not len(scores):
+            return []
+        ranked = np.argsort(scores)[::-1][:top_n]
+        return [int(i) for i in ranked if scores[i] > 0]
+
+    def _vector_ranked_docs(self, query: str, top_n: int) -> List[Any]:
+        try:
+            return self.vector_db.similarity_search(query, k=top_n)
+        except Exception as e:
+            print(f"Vector search error for query '{query[:50]}...': {e}")
+            return []
+
+    def retrieve_single(self, query: str, k_max: int) -> List[Any]:
+        return self.retrieve_multi([query], k_max)
+
+    def retrieve_multi(self, queries: List[str], k_max: int) -> List[Any]:
+        """
+        استرجاع hybrid لعدة صياغات للسؤال (أصلي + موسّع)، مدمجة كلها بـ
+        RRF واحد موحّد. كل صياغة تساهم بترتيبها اللفظي والدلالي، والمستند
+        اللي يظهر بأكثر من صياغة/طريقة يرتفع ترتيبه تلقائياً.
+        """
+        rrf_scores: Dict[str, float] = {}
+        doc_lookup: Dict[str, Any] = {}
+
+        for query in queries:
+            # --- لفظي (BM25) ---
+            bm25_idx = self._bm25_ranked_indices(query, top_n=k_max)
+            for rank, idx in enumerate(bm25_idx):
+                key = self._doc_keys[idx]
+                rrf_scores[key] = rrf_scores.get(key, 0.0) + 1.0 / (self.rrf_k + rank + 1)
+                doc_lookup[key] = self.documents[idx]
+
+            # --- دلالي (vector) ---
+            vector_docs = self._vector_ranked_docs(query, top_n=k_max)
+            for rank, doc in enumerate(vector_docs):
+                key = self._make_key(doc, fallback_idx=hash(doc.page_content[:200]))
+                rrf_scores[key] = rrf_scores.get(key, 0.0) + 1.0 / (self.rrf_k + rank + 1)
+                doc_lookup[key] = doc
+
+        fused = sorted(rrf_scores.items(), key=lambda kv: kv[1], reverse=True)
+        top_docs = [doc_lookup[key] for key, _ in fused[:k_max]]
+
+        print(f" Hybrid RRF: دمج {len(queries)} صياغة سؤال -> {len(top_docs)} مستند مرشّح")
+        return top_docs
+
+    def retrieve_with_scores(self, queries: List[str], k_max: int):
+       
+        rrf_scores: Dict[str, float] = {}
+        doc_lookup: Dict[str, Any] = {}
+
+        for query in queries:
+            bm25_idx = self._bm25_ranked_indices(query, top_n=k_max)
+            for rank, idx in enumerate(bm25_idx):
+                key = self._doc_keys[idx]
+                rrf_scores[key] = rrf_scores.get(key, 0.0) + 1.0 / (self.rrf_k + rank + 1)
+                doc_lookup[key] = self.documents[idx]
+
+            vector_docs = self._vector_ranked_docs(query, top_n=k_max)
+            for rank, doc in enumerate(vector_docs):
+                key = self._make_key(doc, fallback_idx=hash(doc.page_content[:200]))
+                rrf_scores[key] = rrf_scores.get(key, 0.0) + 1.0 / (self.rrf_k + rank + 1)
+                doc_lookup[key] = doc
+
+        fused = sorted(rrf_scores.items(), key=lambda kv: kv[1], reverse=True)
+        top = fused[:k_max]
+        docs = [doc_lookup[key] for key, _ in top]
+        scores = [score for _, score in top]
+        return docs, scores
