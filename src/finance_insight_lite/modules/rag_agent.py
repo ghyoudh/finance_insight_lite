@@ -15,6 +15,9 @@ import plotly.express as px
 import json
 from typing import List, Dict, Any, Literal
 
+from .query_expansion import QueryExpander
+from .hybrid_retriever import HybridRetriever
+
 
 # ============================================================================
 # Structured Output Schema
@@ -100,6 +103,23 @@ class AdaptiveRetrievalDepth:
 
         k_max = corpus_size // self.corpus_divisor
         k_max = max(k_max, self.k_min)
+
+        # FIX (small-corpus floor): corpus_size // corpus_divisor collapses
+        # to k_min for small files (e.g. a single Excel sheet with ~20-30
+        # row-chunks), because corpus_divisor (15) is tuned for large
+        # corpora. On a small corpus, k_min alone (e.g. 3) is too narrow for
+        # questions that need to compare/aggregate several specific rows out
+        # of many similarly-worded ones (e.g. a coaching-criteria table with
+        # 10+ near-identical row labels) — the two relevant rows can easily
+        # both miss the top-k cut, causing the model to report "no data"
+        # or fabricate an answer from unrelated rows instead. For corpora
+        # under ~150 chunks, guarantee a floor of at least 30% of the corpus
+        # (capped by k_upper_bound), so multi-row questions have a fair
+        # chance of pulling in every relevant row from a small file.
+        if corpus_size <= 150:
+            small_corpus_floor = min(self.k_upper_bound, max(8, int(corpus_size * 0.3)))
+            k_max = max(k_max, small_corpus_floor)
+
         k_max = min(k_max, self.k_upper_bound)
         k_max = min(k_max, corpus_size)
         return int(k_max)
@@ -118,7 +138,16 @@ class AdaptiveRetrievalDepth:
             return n
 
         elbow = int(np.argmax(diffs)) + 2
-        elbow = max(elbow, self.elbow_min_docs)
+
+        # FIX (safety net): don't let a "flat" score distribution — which is
+        # common for paraphrased / meaning-based questions where no single
+        # document stands out lexically — cause an overly aggressive cutoff.
+        # Always keep at least a reasonable minimum number of candidates so
+        # the CRAG grader (semantic judge) gets a fair chance to evaluate
+        # them, instead of losing them here purely on score-gap geometry.
+        min_safe_docs = max(self.elbow_min_docs, min(5, n))
+        elbow = max(elbow, min_safe_docs)
+
         elbow = min(elbow, n)
         return elbow
 
@@ -128,18 +157,30 @@ class AdaptiveRetrievalDepth:
 # ============================================================================
 
 class CRAGRetriever:
-    """
-    Corrective RAG مع تقييم دفعي عبر Structured Output (لا يوجد Regex)
-    مدمج الآن مع AdaptiveRetrievalDepth (CA²-CG) بدل k الثابت.
-    """
+   
 
-    MIN_CONFIDENCE_THRESHOLD = 0.6
+    # FIX: lowered from 0.6 -> 0.45. Paraphrased / meaning-based questions
+    # naturally produce lower lexical-confidence scores from the grading LLM
+    # even when the document is semantically correct. A high fixed threshold
+    # was disproportionately punishing those questions. If needed, tune this
+    # further based on testing.
+    MIN_CONFIDENCE_THRESHOLD = 0.45
 
-    def __init__(self, vector_db, llm, adaptive_depth: Optional[AdaptiveRetrievalDepth] = None):
+    def __init__(
+        self,
+        vector_db,
+        llm,
+        adaptive_depth: Optional[AdaptiveRetrievalDepth] = None,
+        hybrid_retriever: Optional[HybridRetriever] = None,
+        query_expander: Optional[QueryExpander] = None,
+    ):
         self.vector_db = vector_db
         self.llm = llm
-        # إعدادات دقيقة (نافذة أضيق) مناسبة للإجابة النصية
         self.adaptive_depth = adaptive_depth or AdaptiveRetrievalDepth()
+
+        # Hybrid Search + Query Expansion 
+        self.hybrid_retriever = hybrid_retriever
+        self.query_expander = query_expander
 
         self.structured_llm = self.llm.with_structured_output(BatchGradeResponse)
 
@@ -156,12 +197,26 @@ IMPORTANT - LANGUAGE HANDLING:
 - `reason_brief` may be written in the same language as the question (Arabic
   question -> Arabic reason is fine), but keep it under 15 words.
 
+IMPORTANT - SEMANTIC MATCHING (not literal keyword matching):
+- The user's question may be phrased very differently from the document's
+  wording — it may use synonyms, paraphrasing, a different level of
+  formality, or describe the same concept from another angle (e.g. "أداء
+  الشركة المالي بآخر 3 شهور" vs a document that says "إيرادات الربع
+  الثالث"). These are the SAME topic and should be graded as if the
+  question used the document's own wording.
+- Judge relevance based on whether the document's underlying financial
+  meaning/topic answers the question — NOT on how many words overlap
+  literally between the question and the document text.
+- Do not lower your relevance classification or confidence merely because
+  the question and document use different terminology for the same concept.
+
 CRITICAL RULES:
 - Do NOT write any preamble, explanation, or free text outside the schema.
 - Return exactly one grade per document, in the same order given.
-- If you are not reasonably confident a document is relevant, classify it as
-  Irrelevant rather than guessing Moderately_Relevant. When uncertain, prefer
-  the stricter (less relevant) label.
+- Only classify a document as Irrelevant if its actual subject matter is
+  unrelated to what is being asked — not because the wording differs. When
+  the topic clearly matches but you are unsure about fine details, prefer
+  Moderately_Relevant over Irrelevant.
 
 **Core Analytical Framework (for your reasoning, not for output format):**
 1. Historical Performance Analysis - trends in revenue, net income, margins
@@ -169,9 +224,9 @@ CRITICAL RULES:
 3. Strategic Context Evaluation - business logic behind financial changes
 
 **Document Relevance Criteria:**
-- Highly_Relevant: contains quantitative data or context directly answering the question
-- Moderately_Relevant: partial/supporting context only
-- Irrelevant: no real financial substance connected to the question"""),
+- Highly_Relevant: contains quantitative data or context directly answering the question (regardless of exact wording overlap)
+- Moderately_Relevant: partial/supporting context only, or same topic but less directly on-point
+- Irrelevant: no real financial substance connected to the question's topic"""),
             ("human", "Question: {question}\n\nDocuments:\n{document}\n\nGrade each document now via the schema.")
         ])
 
@@ -216,6 +271,10 @@ CRITICAL RULES:
             return [False] * len(documents)
 
     def _retrieve_with_scores(self, question: str, k: int):
+        """
+        الاسترجاع الأصلي (Vector-only fallback): يُستخدم فقط لو ما تم
+        تمرير hybrid_retriever لهذا الـ CRAGRetriever.
+        """
         try:
             pairs = self.vector_db.similarity_search_with_relevance_scores(question, k=k)
             docs = [p[0] for p in pairs]
@@ -240,11 +299,26 @@ CRITICAL RULES:
         docs = self.vector_db.similarity_search(question, k=k)
         return docs, None
 
+    def _retrieve_candidates(self, question: str, k_max: int):
+        """
+        نقطة الدخول الموحّدة للاسترجاع الأولي: تستخدم Hybrid (BM25 + vector
+        + توسعة الأسئلة) لو متوفر، وإلا ترجع لسلوك vector-only الأصلي.
+        """
+        if self.hybrid_retriever is not None:
+            queries = (
+                self.query_expander.expand(question)
+                if self.query_expander is not None
+                else [question]
+            )
+            return self.hybrid_retriever.retrieve_with_scores(queries, k_max=k_max)
+
+        return self._retrieve_with_scores(question, k=k_max)
+
     def get_relevant_documents(self, question: str, k: Optional[int] = None) -> List[Dict]:
         k_max = k if k is not None else self.adaptive_depth.compute_k_max(self.vector_db)
         print(f"🔍 نافذة الاسترجاع الأولية (k_max): {k_max}")
 
-        candidate_docs, scores = self._retrieve_with_scores(question, k=k_max)
+        candidate_docs, scores = self._retrieve_candidates(question, k_max=k_max)
 
         if not candidate_docs:
             return []
@@ -277,8 +351,28 @@ CRITICAL RULES:
 # 2. Self-RAG Verification + Iterative Self-Refinement
 # ============================================================================
 
+class NumberAttribution(BaseModel):
+   
+    number_in_answer: str = Field(description="The exact number/figure as it appears in the Answer")
+    row_label_in_source: str = Field(
+        description="The exact row/item label this number is attached to in the Sources "
+                    "(copy it as it appears in the source text). If the number cannot be "
+                    "found in the Sources at all, write 'NOT_FOUND_IN_SOURCES'."
+    )
+    matches_question_intent: bool = Field(
+        description="True only if row_label_in_source is actually what the Question is asking "
+                    "about — not merely a similarly-worded neighboring row/category/period."
+    )
+
+
 class VerificationResult(BaseModel):
     """نتيجة تحقق مبنية على schema - بدون أي parsing عبر regex"""
+    number_checks: List[NumberAttribution] = Field(
+        default_factory=list,
+        description="One entry per distinct number/figure mentioned in the Answer. Must be "
+                    "filled BEFORE deciding rating/passed — your rating/passed decision should "
+                    "follow logically from these checks, not the other way around."
+    )
     rating: int = Field(ge=0, le=10, description="Overall accuracy score from 0 to 10")
     passed: bool = Field(description="True only if numbers are accurate and fully supported by sources")
     missing_refs: List[str] = Field(
@@ -293,9 +387,7 @@ class VerificationResult(BaseModel):
 
 
 class SelfRAGVerifier:
-    """
-    التحقق من الإجابة مقابل المصادر عبر Structured Output.
-    """
+   
 
     def __init__(self, llm):
         self.llm = llm
@@ -307,12 +399,25 @@ class SelfRAGVerifier:
 Compare the 'Answer' against the 'Source Documents' and grade it strictly via
 the provided schema. Do not write any text outside the schema.
 
-Grading rules:
-- rating >= 7 requires every number in the Answer to be traceable to the Sources.
-- If any figure cannot be verified against the Sources, rating must be below 7
-  and passed must be false.
-- missing_refs must list concrete items (e.g. "Q3 net margin figure", "page 12
-  revenue breakdown") — not vague statements.
+STEP 1 — number_checks (do this FIRST, before deciding rating/passed):
+- List every distinct number/figure mentioned in the Answer.
+- For each one, find its row/label in the Sources and copy that label
+  verbatim into row_label_in_source.
+- Judge matches_question_intent honestly: it is True only if that row/label
+  is actually what the Question asked about. A similarly-worded neighboring
+  row/category/period is NOT a match, even if the number itself is real and
+  present somewhere in the Sources.
+
+STEP 2 — rating/passed (derive these FROM step 1, don't decide independently):
+- rating >= 7 requires every number_check to have matches_question_intent=true
+  and every number to be traceable to the Sources.
+- If ANY number_check has matches_question_intent=false, or any figure cannot
+  be found in the Sources at all, rating must be below 7 and passed must be
+  false — treat a mismatched-row number exactly like a fabricated number.
+- missing_refs must list concrete items, and when the issue is a mismatch
+  (real number, wrong row/label), say so explicitly (e.g. "figure X is
+  attributed to the wrong row/label in the source table") — not vague
+  statements.
 - critical_notes must always be written in English, regardless of the
   question's language, since it may be shown directly to the user."""),
             ("human", """Question: {question}
@@ -333,10 +438,35 @@ Grade this answer now via the schema.""")
                     sources="\n\n".join(sources[:5])
                 )
             )
+
+            rating = result.rating
+            passed = result.passed
+            missing_refs = list(result.missing_refs)
+
+            # SAFETY NET (defense-in-depth): don't blindly trust the model's
+            # own rating/passed. If its own number_checks show a mismatch or
+            # a not-found number, force a fail regardless of what it decided
+            # on its own — this is the same "don't trust the holistic verdict,
+            # trust the itemized evidence" pattern used elsewhere in this file.
+            for check in result.number_checks:
+                is_bad = (
+                    not check.matches_question_intent
+                    or check.row_label_in_source.strip().upper() == "NOT_FOUND_IN_SOURCES"
+                )
+                if is_bad:
+                    passed = False
+                    rating = min(rating, 4)
+                    mismatch_note = (
+                        f"{check.number_in_answer} attributed to '{check.row_label_in_source}' "
+                        f"which does not match the question's intent"
+                    )
+                    if mismatch_note not in missing_refs:
+                        missing_refs.append(mismatch_note)
+
             return {
-                "rating": result.rating,
-                "passed": result.passed,
-                "missing_refs": result.missing_refs,
+                "rating": rating,
+                "passed": passed,
+                "missing_refs": missing_refs,
                 "notes": result.critical_notes,
             }
         except Exception as e:
@@ -351,10 +481,7 @@ Grade this answer now via the schema.""")
 
 
 class SelfRefiningAnswerEngine:
-    """
-    ينسّق حلقة Self-Refine كاملة: توليد -> تحقق -> (لو فشل) تحسين موجّه
-    بالنقد -> تحقق مجدداً -> يتكرر حتى معيار توقف أو سقف محاولات.
-    """
+    
 
     def __init__(self, llm, max_refinement_attempts: int = 2, pass_threshold: int = 7):
         self.llm = llm
@@ -386,6 +513,13 @@ class SelfRefiningAnswerEngine:
    spacing or punctuation. Extract only the specific numbers you need and
    weave them into your prose analysis (e.g. summarize totals, averages,
    trends — do not enumerate every single transaction/row).
+6. **Row/label precision in tables**: The Context may contain tables with
+   several rows whose labels are similarly worded (e.g. close variations of
+   the same phrase describing different metrics, periods, or categories).
+   Before using any number, double-check it is taken from the row/label that
+   actually matches what the Question is asking about — not a neighboring row
+   that merely looks similar. If the Question's target is ambiguous between
+   two similarly-named rows, briefly note the ambiguity rather than guessing.
 
 ### OUTPUT FORMAT:
 [Your conversational answer]
@@ -412,10 +546,19 @@ previous answer that failed an accuracy check.
    flags a figure that is genuinely not present in the Context, do not
    invent it — state plainly that it is not available in the reviewed
    documents instead of guessing.
+3b. If the critique flags a number as attributed to the wrong row/label
+   (a real number pulled from a similarly-worded but different row/category/
+   period than what the Question asked about), find and use the number from
+   the CORRECT matching row/label in the Context instead — do not just drop
+   the number or repeat the same mismatch.
 4. Keep the same output format: brief analysis, then a "#### Suggestions"
    section with exactly 2 actionable, professional suggestions.
 5. Do not restate the critique itself to the user — just produce the
    corrected answer.
+5b. Never describe your own edit process (e.g. do not write things like
+   "removed the unsupported unit X" or "kept the verified figure Y"). Write
+   the answer as if it were the first and only version — natural prose from
+   the reader's perspective, with zero meta-commentary about revisions.
 6. Never output JSON, code blocks, or any raw/structured data format —
    plain conversational text only.
 7. Never copy-paste raw records/rows from the Context verbatim. Summarize
@@ -437,37 +580,21 @@ Provide the corrected answer now.""")
 
     @staticmethod
     def _strip_json_artifacts(text: str) -> str:
-        """
-        شبكة أمان إضافية (defense-in-depth): حتى لو النموذج تجاهل تعليمات
-        البرومبت ورجّع JSON (أو ما يشبهه) ضمن الإجابة — سواء بالبداية، أو
-        داخل ```json code block، أو حتى بنص وسط أو نهاية الجواب — نحذفه هنا
-        قبل ما يوصل للمستخدم النهائي.
-
-        التحديث المهم: لا نعتمد فقط على json.loads الصارم للتحقق. كتل كثيرة
-        تكون "منطقياً" تفريغ بيانات خام لكنها تفشل بالـ parsing الصارم بسبب
-        علامات اقتباس ذكية (curly quotes) يولّدها النموذج أحياناً، أو فاصلة
-        زايدة بالنهاية. لذلك نطبّع الاقتباسات أولاً، وإذا فشل json.loads
-        نستخدم fallback: لو الكتلة المتزنة بالأقواس فيها نمط "key": value
-        متكرر بشكل كثيف (3 مرات فأكثر)، نعتبرها تفريغ بيانات ونحذفها أيضاً.
-        """
+    
         if not text:
             return text
 
         cleaned = text
 
-        # 1) حذف أي code block كامل (```json ... ``` أو ``` ... ```) أولاً
         cleaned = re.sub(r'```(?:json)?\s*[\s\S]*?```', '', cleaned, flags=re.IGNORECASE)
 
-        # 2) تطبيع علامات الاقتباس الذكية (curly quotes) قبل أي فحص،
-        #    لأنها سبب شائع لفشل json.loads رغم إن الكتلة منطقياً JSON صالح
+       
         smart_quote_map = {
             '\u201c': '"', '\u201d': '"', '\u2018': "'", '\u2019': "'",
         }
         for bad, good in smart_quote_map.items():
             cleaned = cleaned.replace(bad, good)
 
-        # 3) مسح النص بالكامل والبحث عن أي كتلة [...] أو {...} متزنة
-        #    بالأقواس بأي موضع، وحذفها لو كانت فعلاً تفريغ بيانات
         n = len(cleaned)
         out_chars = []
         i = 0
@@ -494,12 +621,9 @@ Provide the corrected answer now.""")
 
                     try:
                         json.loads(candidate)
-                        # كتلة JSON صالحة فعلاً -> تفريغ بيانات، نحذفها
                         is_data_dump = True
                     except (json.JSONDecodeError, ValueError):
-                        # فشل التحقق الصارم (فاصلة زايدة، سطر مقطوع...) —
-                        # نتحقق بشكل تقريبي: هل فيها نمط "key": متكرر بكثافة؟
-                        # (زي "Transaction ID": ...، "Total": ...، "Date": ...)
+                        
                         kv_pattern_count = len(
                             re.findall(r'"[^"\n]{1,60}"\s*:\s*', candidate)
                         )
@@ -509,19 +633,15 @@ Provide the corrected answer now.""")
                     if is_data_dump:
                         i = end_idx + 1
                         continue
-                    # مو JSON ولا تفريغ بيانات (قوس ضمن جملة عادية مثلاً) —
-                    # نعامله كنص طبيعي ونكمل
+                
 
             out_chars.append(ch)
             i += 1
 
         cleaned = ''.join(out_chars)
 
-        # تنظيف الأسطر الفارغة الزائدة اللي تخلّف من حذف الكتل
         cleaned = re.sub(r'\n{3,}', '\n\n', cleaned).strip()
 
-        # لو الحذف خلّى النص فاضي بالكامل (حالة نادرة)، نرجع الأصل بدل ما
-        # نعرض للمستخدم إجابة فاضية
         return cleaned if cleaned else text.strip()
 
     def _generate_initial(self, query: str, context: str, chat_history: list) -> str:
@@ -592,18 +712,7 @@ Provide the corrected answer now.""")
 # ============================================================================
 
 class FinancialDataExtractor:
-    """
-    Extract financial data from documents for visualization.
-
-    التحديث: بدل k=5 الثابت، نستخدم الآن AdaptiveRetrievalDepth لحساب حجم
-    نافذة الاسترجاع ديناميكياً حسب حجم الملف/القاعدة.
-
-    نستخدم إعدادات "أوسع" افتراضياً (corpus_divisor أصغر و k_upper_bound
-    أعلى) مقارنة بالإعدادات المستخدمة بالإجابة النصية (CRAGRetriever)، لأن
-    هدف الرسم البياني هو التغطية (coverage) — نبي نلقط كل فئات البيانات
-    المرتبطة بالسؤال (مثلاً كل بنود المصاريف) — وليس التضييق الشديد
-    بالدقة اللي يحتاجه توليد الإجابة النصية.
-    """
+  
 
     def __init__(self, vector_db, llm, adaptive_depth: Optional[AdaptiveRetrievalDepth] = None):
         self.vector_db = vector_db
@@ -611,7 +720,7 @@ class FinancialDataExtractor:
         self.adaptive_depth = adaptive_depth or AdaptiveRetrievalDepth(
             k_min=4,
             k_upper_bound=25,
-            corpus_divisor=10,  # نافذة أوسع من الإعداد الافتراضي (15) عشان تغطية أفضل
+            corpus_divisor=10,  
         )
 
     def extract_data_from_query(self, query: str, k: Optional[int] = None) -> pd.DataFrame:
@@ -755,10 +864,12 @@ class ChartGenerator:
 # ============================================================================
 
 class FinancialRAGAgent:
-    """Extract financial data from documents for visualization"""
+   
 
-    def __init__(self, vector_db):
+    def __init__(self, vector_db, chunks: Optional[List[Any]] = None):
         self.vector_db = vector_db
+        self.chunks = chunks
+        self._hybrid_retriever = HybridRetriever(vector_db, chunks) if chunks else None
 
     def process_query(self, query: str , chat_history: list = None) -> dict:
         api_key = os.getenv("GROQ_API_KEY")
@@ -768,7 +879,15 @@ class FinancialRAGAgent:
             temperature=0,
         )
 
-        retriever = CRAGRetriever(self.vector_db, self.llm)
+       
+        query_expander = QueryExpander(self.llm) if self._hybrid_retriever else None
+
+        retriever = CRAGRetriever(
+            self.vector_db,
+            self.llm,
+            hybrid_retriever=self._hybrid_retriever,
+            query_expander=query_expander,
+        )
         relevant_results = retriever.get_relevant_documents(query)
 
         relevant_docs = [r["document"] for r in relevant_results]
@@ -830,8 +949,7 @@ class FinancialRAGAgent:
         viz_keywords = ["chart", "visualiz", "plot", "graph", "draw", "pie", "bar", "line", "trend"]
         if any(kw in query.lower() for kw in viz_keywords):
             try:
-                # نستخدم adaptive_depth مستقل وأوسع (تغطية) بدل k=5 الثابت،
-                # ومنفصل عن إعدادات retriever النصي (اللي همه الدقة/التضييق)
+                
                 extractor = FinancialDataExtractor(self.vector_db, self.llm)
                 df = extractor.extract_data_from_query(query)
                 print(f"📊 DataFrame for visualization:\n{df.head()}")
