@@ -52,6 +52,14 @@ class AdaptiveRetrievalDepth:
     يحسب حجم نافذة الاسترجاع (k) بشكل ديناميكي بناءً على:
       - حجم قاعدة البيانات (corpus size)
       - توزيع درجات التشابه (similarity score distribution) للسؤال الحالي
+
+    ملاحظة: هذا الكلاس عام وقابل لإعادة الاستخدام بإعدادات مختلفة حسب
+    الاستهلاك. مثلاً:
+      - الاسترجاع النصي (CRAGRetriever) يحتاج دقة أعلى -> corpus_divisor أكبر
+        (نافذة أضيق) + k_upper_bound أقل.
+      - استخراج بيانات الرسوم البيانية (FinancialDataExtractor) يحتاج تغطية
+        أوسع (عشان يلقط كل فئات البيانات) -> corpus_divisor أصغر (نافذة أوسع)
+        + k_upper_bound أعلى.
     """
 
     def __init__(
@@ -130,6 +138,7 @@ class CRAGRetriever:
     def __init__(self, vector_db, llm, adaptive_depth: Optional[AdaptiveRetrievalDepth] = None):
         self.vector_db = vector_db
         self.llm = llm
+        # إعدادات دقيقة (نافذة أضيق) مناسبة للإجابة النصية
         self.adaptive_depth = adaptive_depth or AdaptiveRetrievalDepth()
 
         self.structured_llm = self.llm.with_structured_output(BatchGradeResponse)
@@ -583,14 +592,33 @@ Provide the corrected answer now.""")
 # ============================================================================
 
 class FinancialDataExtractor:
-    """Extract financial data from documents for visualization"""
+    """
+    Extract financial data from documents for visualization.
 
-    def __init__(self, vector_db, llm):
+    التحديث: بدل k=5 الثابت، نستخدم الآن AdaptiveRetrievalDepth لحساب حجم
+    نافذة الاسترجاع ديناميكياً حسب حجم الملف/القاعدة.
+
+    نستخدم إعدادات "أوسع" افتراضياً (corpus_divisor أصغر و k_upper_bound
+    أعلى) مقارنة بالإعدادات المستخدمة بالإجابة النصية (CRAGRetriever)، لأن
+    هدف الرسم البياني هو التغطية (coverage) — نبي نلقط كل فئات البيانات
+    المرتبطة بالسؤال (مثلاً كل بنود المصاريف) — وليس التضييق الشديد
+    بالدقة اللي يحتاجه توليد الإجابة النصية.
+    """
+
+    def __init__(self, vector_db, llm, adaptive_depth: Optional[AdaptiveRetrievalDepth] = None):
         self.vector_db = vector_db
         self.llm = llm
+        self.adaptive_depth = adaptive_depth or AdaptiveRetrievalDepth(
+            k_min=4,
+            k_upper_bound=25,
+            corpus_divisor=10,  # نافذة أوسع من الإعداد الافتراضي (15) عشان تغطية أفضل
+        )
 
-    def extract_data_from_query(self, query: str, k: int = 5) -> pd.DataFrame:
-        docs = self.vector_db.similarity_search(query, k=k)
+    def extract_data_from_query(self, query: str, k: Optional[int] = None) -> pd.DataFrame:
+        k_max = k if k is not None else self.adaptive_depth.compute_k_max(self.vector_db)
+        print(f"📊 نافذة الاسترجاع لاستخراج بيانات الرسم البياني (k_max): {k_max}")
+
+        docs = self.vector_db.similarity_search(query, k=k_max)
 
         if not docs:
             return pd.DataFrame()
@@ -802,6 +830,8 @@ class FinancialRAGAgent:
         viz_keywords = ["chart", "visualiz", "plot", "graph", "draw", "pie", "bar", "line", "trend"]
         if any(kw in query.lower() for kw in viz_keywords):
             try:
+                # نستخدم adaptive_depth مستقل وأوسع (تغطية) بدل k=5 الثابت،
+                # ومنفصل عن إعدادات retriever النصي (اللي همه الدقة/التضييق)
                 extractor = FinancialDataExtractor(self.vector_db, self.llm)
                 df = extractor.extract_data_from_query(query)
                 print(f"📊 DataFrame for visualization:\n{df.head()}")
