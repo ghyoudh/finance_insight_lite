@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from contextlib import contextmanager
 from typing import Any, TYPE_CHECKING
 
 from pydantic import SecretStr
@@ -12,6 +13,22 @@ if TYPE_CHECKING:
 
 
 DEFAULT_GROQ_MODEL = "openai/gpt-oss-20b"
+_TRACING_ENV_VARS = ("LANGCHAIN_TRACING_V2", "LANGSMITH_TRACING")
+
+
+@contextmanager
+def _without_langchain_tracing() -> Any:
+    original = {key: os.environ.get(key) for key in _TRACING_ENV_VARS}
+    try:
+        for key in _TRACING_ENV_VARS:
+            os.environ[key] = "false"
+        yield
+    finally:
+        for key, value in original.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
 
 
 def create_groq_chat_model(
@@ -42,13 +59,15 @@ class GroqJudgeClient:
     @property
     def chat_model(self) -> Any:
         if self._chat_model is None:
-            self._chat_model = create_groq_chat_model(model=self.model, temperature=0)
+            with _without_langchain_tracing():
+                self._chat_model = create_groq_chat_model(model=self.model, temperature=0)
         return self._chat_model
 
     def complete(self, system_prompt: str, user_prompt: str) -> str:
-        response = self.chat_model.invoke(
-            [("system", system_prompt), ("human", user_prompt)]
-        )
+        with _without_langchain_tracing():
+            response = self.chat_model.invoke(
+                [("system", system_prompt), ("human", user_prompt)]
+            )
         content = getattr(response, "content", response)
         if isinstance(content, str):
             return content

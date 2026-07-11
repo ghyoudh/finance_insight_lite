@@ -12,6 +12,7 @@ import argparse
 import csv
 import json
 import logging
+import os
 import re
 import time
 from pathlib import Path
@@ -191,15 +192,31 @@ def _write_results(rows: list[dict[str, Any]], path: Path) -> None:
         json.dump(rows, handle, indent=2, ensure_ascii=False)
 
 
+def _load_env_file(path: Path) -> None:
+    """Load simple KEY=VALUE pairs when python-dotenv is unavailable."""
+    if not path.exists():
+        return
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, value = stripped.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip("\"'")
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+
 def main(argv: list[str] | None = None) -> int:
     # Match the original evaluation script's .env behavior, but do not fail
     # until the optional paid judge is actually requested.
+    env_path = Path(__file__).resolve().parents[3] / ".env"
     try:
         from dotenv import load_dotenv
 
-        load_dotenv(Path(__file__).resolve().parents[3] / ".env")
+        load_dotenv(env_path)
     except ImportError:
-        pass
+        _load_env_file(env_path)
     parser = argparse.ArgumentParser(description="Evaluate financial RAG answers from a JSONL file.")
     parser.add_argument("--input", type=Path, required=True, help="JSONL records containing question, generated_answer, and source_chunks.")
     parser.add_argument("--output", type=Path, required=True, help="Output .json or .csv path.")

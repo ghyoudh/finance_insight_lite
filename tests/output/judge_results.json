@@ -1,0 +1,62 @@
+[
+  {
+    "model": "candidate_a",
+    "question": "What was 2023 revenue?",
+    "source_chunks": [
+      "Revenue for 2023 was SAR 100 million."
+    ],
+    "reference_answer": "Revenue for 2023 was SAR 100 million.",
+    "generated_answer": "2023 revenue was SAR 100 million.",
+    "token_precision": 1.0,
+    "token_recall": 0.86,
+    "token_f1": 0.92,
+    "judge_status": "ok",
+    "groundedness": 5,
+    "numerical_accuracy": 5,
+    "relevance": 5,
+    "clarity": 5,
+    "overall": 5.0,
+    "unsupported_claims": [],
+    "rationale": "The answer directly repeats the figure from the source chunk, matching the requested information exactly."
+  },
+  {
+    "model": "candidate_a",
+    "question": "What was the operating margin?",
+    "source_chunks": [
+      "Operating income was SAR 20 million on revenue of SAR 100 million."
+    ],
+    "reference_answer": "Operating margin was 20%.",
+    "generated_answer": "The operating margin was 20%.",
+    "token_precision": 0.8,
+    "token_recall": 1.0,
+    "token_f1": 0.89,
+    "judge_status": "ok",
+    "groundedness": 5,
+    "numerical_accuracy": 5,
+    "relevance": 5,
+    "clarity": 5,
+    "overall": 5.0,
+    "unsupported_claims": [],
+    "rationale": "The answer correctly states the operating margin as 20%, directly derived from the provided source chunk, with no unsupported or invented information."
+  },
+  {
+    "model": "candidate_b",
+    "question": "When did the company announce the dividend?",
+    "source_chunks": [
+      "The board announced a SAR 5 million dividend on 15 March 2024."
+    ],
+    "reference_answer": "The dividend was announced on 15 March 2024.",
+    "generated_answer": "The dividend was announced on 15 March 2024.",
+    "token_precision": 1.0,
+    "token_recall": 1.0,
+    "token_f1": 1.0,
+    "judge_status": "ok",
+    "groundedness": 5,
+    "numerical_accuracy": 5,
+    "relevance": 5,
+    "clarity": 5,
+    "overall": 5.0,
+    "unsupported_claims": [],
+    "rationale": "The answer accurately states the date from the source and contains no unsupported claims."
+  }
+]
