@@ -5,25 +5,29 @@ from pathlib import Path
 from dotenv import load_dotenv
 import time
 import sys
-from finance_insight_lite.modules.processor import load_documents_fastest, clear_cache
 import plotly.graph_objects as go
 import json
 import pandas as pd
 import chat_db
 
+# Ensure Streamlit imports this checkout, not an older installed package.
+current_dir = str(Path(__file__).resolve().parent)
+if current_dir in sys.path:
+    sys.path.remove(current_dir)
+sys.path.insert(0, current_dir)
+
+from finance_insight_lite.modules.processor import (
+    clear_cache,
+    load_documents_fastest,
+    pdf_to_documents,
+)
+from finance_insight_lite.modules.verctor_store import build_vector_db
+from finance_insight_lite.modules.rag_agent import FinancialRAGAgent
+
 # Load environment variables
 project_root = Path(__file__).parent.parent
 env_path = project_root / '.env'
 load_dotenv(dotenv_path=env_path)
-current_dir = os.path.dirname(os.path.abspath(__file__))
-package_path = os.path.join(current_dir, "finance_insight_lite")
-sys.path.append(current_dir)
-sys.path.append(package_path)
-
-# Import your modules
-from finance_insight_lite.modules.processor import pdf_to_documents
-from finance_insight_lite.modules.verctor_store import build_vector_db
-from finance_insight_lite.modules.rag_agent import FinancialRAGAgent
 
 # Page config
 st.set_page_config(
@@ -179,7 +183,8 @@ with st.sidebar:
                     with st.spinner("Building vector database..."):
                         st.session_state.vector_db = build_vector_db(
                             all_documents,
-                            db_path="./database"
+                            db_path="./database",
+                            source_paths=uploaded_file_paths,
                         )
 
                     # Create agent with toggle for Self-RAG

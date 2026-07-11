@@ -1,40 +1,103 @@
+import hashlib
+import json
+import pickle
+from functools import lru_cache
+from pathlib import Path
+
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
 
-def build_vector_db(documents, db_path="./database"):
-    """
-    Build vector database from documents with preserved metadata using FAISS
-    """
-    print(f"Building vector DB from {len(documents)} documents")
 
-    # Split documents into chunks while preserving metadata
+CHUNK_SIZE = 1500
+CHUNK_OVERLAP = 100
+EMBEDDING_MODEL = "all-MiniLM-L6-v2"
+
+
+def _hash_file(file_path):
+    digest = hashlib.md5()
+    with open(file_path, "rb") as source_file:
+        for block in iter(lambda: source_file.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _cache_key(documents, source_paths):
+    """Return a stable cache key for the corpus and index configuration."""
+    if source_paths:
+        source_fingerprints = [_hash_file(path) for path in source_paths]
+    else:
+        source_fingerprints = [
+            hashlib.md5(
+                json.dumps(
+                    {"page_content": document.page_content, "metadata": document.metadata},
+                    sort_keys=True,
+                    default=str,
+                ).encode("utf-8")
+            ).hexdigest()
+            for document in documents
+        ]
+
+    configuration = {
+        "sources": source_fingerprints,
+        "chunk_size": CHUNK_SIZE,
+        "chunk_overlap": CHUNK_OVERLAP,
+        "embedding_model": EMBEDDING_MODEL,
+    }
+    return hashlib.md5(json.dumps(configuration, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+@lru_cache(maxsize=1)
+def get_embedding_model():
+    """Create the embedding model once per Python process."""
+    return HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL)
+
+
+def _load_or_create_chunks(documents, chunks_file):
+    if chunks_file.exists():
+        with open(chunks_file, "rb") as cache_file:
+            chunks = pickle.load(cache_file)
+        print(f"📦 Loaded {len(chunks)} chunks from cache")
+        return chunks
+
     text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=1500,
-        chunk_overlap=100,
+        chunk_size=CHUNK_SIZE,
+        chunk_overlap=CHUNK_OVERLAP,
         length_function=len,
     )
-
-    # Split documents into chunks
     chunks = text_splitter.split_documents(documents)
+    with open(chunks_file, "wb") as cache_file:
+        pickle.dump(chunks, cache_file)
+    print(f"✓ Created and cached {len(chunks)} chunks from {len(documents)} pages")
+    return chunks
 
-    print(f"✓ Created {len(chunks)} chunks from {len(documents)} pages")
 
-    # Initialize the embedding model
-    embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+def build_vector_db(documents, db_path="./database", source_paths=None, cache_dir="data/vector_cache"):
+    """
+    Build or load a cached FAISS vector database.
 
-    # Create FAISS vector database (better metadata handling than Chroma)
-    vector_db = FAISS.from_documents(
-        documents=chunks,
-        embedding=embeddings
-    )
+    The cache key includes the ordered hashes of the source files and the
+    chunking/embedding settings. `db_path` is retained for API compatibility;
+    the reusable index is stored below `cache_dir`.
+    """
+    if not documents:
+        raise ValueError("Cannot build a vector database without documents")
 
-    # Save to disk
-    if db_path:
-        vector_db.save_local(db_path)
-    else:
-        vector_db.save_local("faiss_index")
+    cache_path = Path(cache_dir) / _cache_key(documents, source_paths)
+    cache_path.mkdir(parents=True, exist_ok=True)
+    index_file = cache_path / "index.faiss"
+    metadata_file = cache_path / "index.pkl"
+    embeddings = get_embedding_model()
 
-    print(f"✓ Vector database saved to: {db_path}")
+    if index_file.exists() and metadata_file.exists():
+        print(f"📦 Loading FAISS index from cache: {cache_path}")
+        return FAISS.load_local(
+            str(cache_path), embeddings, allow_dangerous_deserialization=True
+        )
 
+    print(f"Building vector DB from {len(documents)} documents")
+    chunks = _load_or_create_chunks(documents, cache_path / "chunks.pkl")
+    vector_db = FAISS.from_documents(documents=chunks, embedding=embeddings)
+    vector_db.save_local(str(cache_path))
+    print(f"✓ Cached FAISS index at: {cache_path}")
     return vector_db

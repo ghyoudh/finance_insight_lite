@@ -2,32 +2,32 @@ import fitz  # PyMuPDF
 import pandas as pd
 import os
 from langchain_core.documents import Document
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from functools import lru_cache
 import hashlib
+from multiprocessing import Pool
 from pathlib import Path
 import pickle
 
 
 # ============================================================================
-# OPTIMIZATION 1: Parallel Processing with ThreadPoolExecutor
+# OPTIMIZATION 1: Parallel PDF Processing
 # ============================================================================
 
-def process_single_page(page_data):
-    """Process a single page (for parallel execution)"""
-    page_num, page_text, pdf_name = page_data
-    return Document(
-        page_content=page_text,
-        metadata={
-            "source": pdf_name,
-            "page": page_num + 1
-        }
-    )
+def _extract_page_range(args):
+    """Extract one page range in its own process (PyMuPDF is not thread-safe)."""
+    pdf_path, start_page, end_page = args
+    document = fitz.open(pdf_path)
+    try:
+        return [
+            (page_num, document[page_num].get_text("text"))
+            for page_num in range(start_page, end_page)
+        ]
+    finally:
+        document.close()
 
 
 def pdf_to_documents_parallel(pdf_path, max_workers=4):
     """
-    Load PDF with parallel processing - 3-5x faster for large PDFs
+    Load a PDF using process-based extraction for large documents.
     
     Args:
         pdf_path: Path to PDF file
@@ -36,27 +36,30 @@ def pdf_to_documents_parallel(pdf_path, max_workers=4):
     print(f"Loading PDF: {pdf_path}")
     doc = fitz.open(pdf_path)
     pdf_name = os.path.basename(pdf_path)
-    
-    # Extract all page texts first (this is fast)
-    page_data = [
-        (page_num, page.get_text("text"), pdf_name)
-        for page_num, page in enumerate(doc)
+    total_pages = doc.page_count
+    doc.close()
+
+    worker_count = min(max_workers, total_pages)
+    if worker_count <= 1:
+        page_texts = _extract_page_range((pdf_path, 0, total_pages))
+    else:
+        pages_per_worker = (total_pages + worker_count - 1) // worker_count
+        page_ranges = [
+            (pdf_path, start_page, min(start_page + pages_per_worker, total_pages))
+            for start_page in range(0, total_pages, pages_per_worker)
+        ]
+        with Pool(processes=worker_count) as pool:
+            page_texts = [item for batch in pool.map(_extract_page_range, page_ranges) for item in batch]
+
+    documents = [
+        Document(
+            page_content=page_text,
+            metadata={"source": pdf_name, "page": page_num + 1},
+        )
+        for page_num, page_text in page_texts
     ]
-    
-    doc.close()  # Close early to free memory
-    
-    # Process pages in parallel
-    documents = []
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = [executor.submit(process_single_page, data) for data in page_data]
-        
-        for future in as_completed(futures):
-            documents.append(future.result())
-    
-    # Sort by page number to maintain order
-    documents.sort(key=lambda x: x.metadata['page'])
-    
-    print(f"✓ Loaded {len(documents)} pages from PDF (parallel)")
+
+    print(f"✓ Loaded {len(documents)} pages from PDF")
     return documents
 
 
@@ -275,13 +278,14 @@ def pdf_to_documents(pdf_path):
 # Clear Cache
 # ============================================================================
 
-def clear_cache(cache_dir="data/cache"):
-    """Clear all cached documents"""
+def clear_cache(cache_dir="data/cache", vector_cache_dir="data/vector_cache"):
+    """Clear cached source documents, chunks, and FAISS indices."""
     import shutil
-    cache_path = Path(cache_dir)
-    if cache_path.exists():
-        shutil.rmtree(cache_path)
-        cache_path.mkdir(parents=True)
-        print(f"✓ Cache cleared: {cache_dir}")
-    else:
-        print("No cache to clear")
+    cleared = False
+    for directory in (cache_dir, vector_cache_dir):
+        cache_path = Path(directory)
+        if cache_path.exists():
+            shutil.rmtree(cache_path)
+            cache_path.mkdir(parents=True)
+            cleared = True
+    print("✓ Cache cleared" if cleared else "No cache to clear")

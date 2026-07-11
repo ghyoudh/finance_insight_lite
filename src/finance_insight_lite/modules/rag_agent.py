@@ -763,7 +763,7 @@ class FinancialRAGAgent:
     def process_query(self, query: str , chat_history: list = None) -> dict:
         api_key = os.getenv("GROQ_API_KEY")
         self.llm = ChatGroq(
-            model="llama-3.3-70b-versatile",
+            model="openai/gpt-oss-20b",
             api_key=SecretStr(api_key) if api_key else None,
             temperature=0,
         )
