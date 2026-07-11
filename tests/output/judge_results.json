@@ -1,62 +1,92 @@
 [
   {
-    "model": "candidate_a",
-    "question": "What was 2023 revenue?",
-    "source_chunks": [
-      "Revenue for 2023 was SAR 100 million."
+    "question": "What is the net income?",
+    "generated_answer": "The net income is not explicitly stated in the provided context, but we can infer that the total comprehensive income is 453,055 million USD, which is equivalent to approximately 1,700,458 million SAR, considering the conversion rate of 1 USD = 3.75 SAR. \n\nTo determine the net income, we would need to refer to the consolidated statement of comprehensive income and look for the net income figure, which is not provided in the given context. However, we can suggest some steps to find the net income.\n\n#### Suggestions\n- Review the consolidated statement of comprehensive income to find the net income figure, which is typically presented before the other comprehensive income.\n- Check the notes to the financial statements, such as Note 8, which provides detailed taxation information, including current expense and deferred income tax assets and liabilities, to gain a better understanding of the company's net income.\n\n---\n**Note:** This response reflects our best available answer after multiple review passes, but some figures could not be fully verified against the source documents. Please treat it with appropriate caution.",
+    "retrieved_context": [
+      "84",
+      "90"
     ],
-    "reference_answer": "Revenue for 2023 was SAR 100 million.",
-    "generated_answer": "2023 revenue was SAR 100 million.",
-    "token_precision": 1.0,
-    "token_recall": 0.86,
-    "token_f1": 0.92,
+    "token_precision": 0.0,
+    "token_recall": 0.0,
+    "token_f1": 0,
     "judge_status": "ok",
-    "groundedness": 5,
-    "numerical_accuracy": 5,
-    "relevance": 5,
-    "clarity": 5,
-    "overall": 5.0,
-    "unsupported_claims": [],
-    "rationale": "The answer directly repeats the figure from the source chunk, matching the requested information exactly."
+    "groundedness": 1,
+    "numerical_accuracy": 1,
+    "relevance": 1,
+    "clarity": 2,
+    "overall": 1.2,
+    "unsupported_claims": [
+      "The net income is not explicitly stated in the provided context, but we can infer that the total comprehensive income is 453,055 million USD, which is equivalent to approximately 1,700,458 million SAR, considering the conversion rate of 1 USD = 3.75 SAR.",
+      "To determine the net income, we would need to refer to the consolidated statement of comprehensive income and look for the net income figure, which is not provided in the given context.",
+      "We can suggest some steps to find the net income.",
+      "The suggestions about reviewing the consolidated statement and notes to the financial statements."
+    ],
+    "rationale": "The generated answer introduces figures and claims that are not present in the retrieved source chunks, making it unsupported and inaccurate."
   },
   {
-    "model": "candidate_a",
-    "question": "What was the operating margin?",
-    "source_chunks": [
-      "Operating income was SAR 20 million on revenue of SAR 100 million."
+    "question": "كم الارباح",
+    "generated_answer": "لم يتم ذكر الأرباح بشكل صريح في السياق المُقدم، ولا توجد معلومات مباشرة عن الأرباح في الصفحات المُقدمة. لا يوجد أي رقم أو بيانات مالية متعلقة بالأرباح في النص، ولا يمكن استخراج أي معلومات عن الأرباح من البيانات المُقدمة.\n\n#### Suggestions\n- يجب البحث في مصادر أخرى لتحديد أرقام الأرباح، مثل تقارير الدخل الشهرية أو السنوية للشركة، لأن المعلومات المُقدمة لا تحتوي على أي بيانات مالية متعلقة بالأرباح.\n- يجب التحقق من قواعد البيانات المالية أو المواقع الرسمية للشركة لتحليل أداء الشركة المالي وتحديد أي معلومات متاحة حول الأرباح، لأن السياق المُقدم لا يحتوي على أي معلومات مفيدة في هذا الصدد.\n\n---\n**Note:** This response reflects our best available answer after multiple review passes, but some figures could not be fully verified against the source documents. Please treat it with appropriate caution.",
+    "retrieved_context": [
+      "50",
+      "76"
     ],
-    "reference_answer": "Operating margin was 20%.",
-    "generated_answer": "The operating margin was 20%.",
-    "token_precision": 0.8,
-    "token_recall": 1.0,
-    "token_f1": 0.89,
+    "token_precision": 0.0,
+    "token_recall": 0.0,
+    "token_f1": 0,
     "judge_status": "ok",
-    "groundedness": 5,
-    "numerical_accuracy": 5,
-    "relevance": 5,
-    "clarity": 5,
-    "overall": 5.0,
-    "unsupported_claims": [],
-    "rationale": "The answer correctly states the operating margin as 20%, directly derived from the provided source chunk, with no unsupported or invented information."
+    "groundedness": 1,
+    "numerical_accuracy": 1,
+    "relevance": 1,
+    "clarity": 4,
+    "overall": 1.5,
+    "unsupported_claims": [
+      "لم يتم ذكر الأرباح بشكل صريح في السياق المُقدم، ولا توجد معلومات مباشرة عن الأرباح في الصفحات المُقدمة. لا يوجد أي رقم أو بيانات مالية متعلقة بالأرباح في النص، ولا يمكن استخراج أي معلومات عن الأرباح من البيانات المُقدمة."
+    ],
+    "rationale": "The answer asserts that no profit figures are present, yet the retrieved chunks contain numeric values (50 and 76) that could represent profits, making the claim unsupported by the evidence. The response also fails to address the user’s question directly."
   },
   {
-    "model": "candidate_b",
-    "question": "When did the company announce the dividend?",
-    "source_chunks": [
-      "The board announced a SAR 5 million dividend on 15 March 2024."
+    "question": "What is the gearing ratio?",
+    "generated_answer": "The gearing ratio is a financial metric that measures the proportion of a company's net debt to its total equity. Based on the provided data, the gearing ratio is expressed as a percentage and has fluctuated over time, with values ranging from -0.105 to 0.230. This indicates that the company has experienced varying levels of debt and equity throughout the period.\n\nIn terms of analysis, a gearing ratio of 0.230 suggests that the company has a significant amount of debt compared to its equity, which may indicate a higher level of financial risk. On the other hand, a gearing ratio of -0.105 suggests that the company has a net cash position, which may indicate a lower level of financial risk.\n\n#### Suggestions\n- Consider monitoring the company's gearing ratio over time to identify trends and potential areas of financial risk, and adjust investment strategies accordingly, taking into account the company's financial performance in USD.\n- Evaluate the company's debt management strategies and consider diversifying investments to minimize exposure to potential financial risks, while also considering the impact of currency fluctuations on the company's financial performance in USD.\n\n---\n**Note:** This response reflects our best available answer after multiple review passes, but some figures could not be fully verified against the source documents. Please treat it with appropriate caution.",
+    "retrieved_context": [
+      "Sheet: Key figures"
     ],
-    "reference_answer": "The dividend was announced on 15 March 2024.",
-    "generated_answer": "The dividend was announced on 15 March 2024.",
-    "token_precision": 1.0,
-    "token_recall": 1.0,
-    "token_f1": 1.0,
+    "token_precision": 0.01,
+    "token_recall": 0.33,
+    "token_f1": 0.02,
     "judge_status": "ok",
-    "groundedness": 5,
+    "groundedness": 1,
+    "numerical_accuracy": 1,
+    "relevance": 3,
+    "clarity": 4,
+    "overall": 1.5,
+    "unsupported_claims": [
+      "The gearing ratio ranges from -0.105 to 0.230",
+      "A gearing ratio of 0.230 indicates significant debt",
+      "A gearing ratio of -0.105 indicates a net cash position"
+    ],
+    "rationale": "The answer contains specific numerical ranges and interpretations that are not supported by the single source chunk provided, which contains no data. The response is clear and relevant but lacks evidence, resulting in low groundedness and numerical accuracy."
+  },
+  {
+    "question": "Draw a pie chart of expense breakdown",
+    "generated_answer": "I'm not able to generate a visual chart directly, but I can walk you through how to create a pie chart of your expense breakdown using the figures from your summarized income statement.\n\n**Analysis**  \nYour expense section is divided into several categories—such as cost of goods sold, operating expenses, marketing, salaries, and other miscellaneous costs. By summing each category and dividing by the total expenses, you'll get the percentage each line item contributes to the overall spend. These percentages are what you'll plot on the pie chart.\n\n**How to create the chart**  \n1. **List each expense category** and its total amount.  \n2. **Calculate the percentage** of each category relative to the total expenses.  \n3. **Use a spreadsheet tool** (Excel, Google Sheets, or similar).  \n   - Enter the categories in one column and the percentages in the next.  \n   - Highlight the data and insert a pie chart.  \n   - Label each slice with the category name and its percentage for clarity.\n\n**Suggestions**  \n- **Prioritize high‑impact categories**: If a single expense line (e.g., salaries or marketing) dominates the pie, consider whether that spend aligns with your strategic goals or if there are efficiencies to be gained.  \n- **Track changes over time**: Create a series of pie charts for each reporting period to visualize how your expense mix evolves, helping you spot trends and adjust budgets proactively.",
+    "retrieved_context": [
+      "Sheet: Summarized income statement"
+    ],
+    "token_precision": 0.02,
+    "token_recall": 0.75,
+    "token_f1": 0.04,
+    "judge_status": "ok",
+    "groundedness": 1,
     "numerical_accuracy": 5,
-    "relevance": 5,
-    "clarity": 5,
-    "overall": 5.0,
-    "unsupported_claims": [],
-    "rationale": "The answer accurately states the date from the source and contains no unsupported claims."
+    "relevance": 4,
+    "clarity": 4,
+    "overall": 1.5,
+    "unsupported_claims": [
+      "expense section is divided into several categories—such as cost of goods sold, operating expenses, marketing, salaries, and other miscellaneous costs",
+      "By summing each category and dividing by the total expenses, you'll get the percentage each line item contributes to the overall spend",
+      "Prioritize high‑impact categories: If a single expense line (e.g., salaries or marketing) dominates the pie, consider whether that spend aligns with your strategic goals or if there are efficiencies to be gained",
+      "Track changes over time: Create a series of pie charts for each reporting period to visualize how your expense mix evolves"
+    ],
+    "rationale": "The answer makes multiple specific claims about expense categories and calculations that are not present in the single source chunk, resulting in very low groundedness, while numerical accuracy is unaffected due to lack of figures."
   }
 ]

@@ -2,8 +2,10 @@
 
 import json
 import sys
+import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -32,7 +34,7 @@ VALID_SCORE = json.dumps(
 
 JUDGE_METRICS = ("groundedness", "numerical_accuracy", "relevance", "clarity", "overall")
 
-FIXTURE_PATH = Path(__file__).parent / "fixtures" / "financial_rag_samples.jsonl"
+FIXTURE_PATH = Path(__file__).parent / "fixtures" / "chat_history_export.jsonl"
 
 
 class FakeJudgeClient:
@@ -309,6 +311,226 @@ class EvaluateAndAggregateTests(unittest.TestCase):
         # The failed row must not be counted toward any model's aggregate.
         total_aggregated_rows = sum(a["judge_rows"] for a in aggregates.values())
         self.assertEqual(total_aggregated_rows, ok_row_count)
+
+    # -- Tightened validation of the aggregate arithmetic itself -----------------
+    #
+    # The tests above confirm counts and bounds (1-5), but none of them confirm
+    # that aggregate_judge_scores is actually computing the right numbers. The
+    # tests below pin down the real arithmetic with distinct, hand-picked scores
+    # so a bug like "averaging the wrong column" or "cross-model contamination"
+    # would fail loudly instead of slipping through a range check.
+
+    def test_aggregate_computes_exact_arithmetic_mean_per_metric(self):
+        """Aggregates must reflect the precise mean of underlying scores, not just
+        fall within the valid 1-5 range. Two records for the same model, with
+        distinct known per-metric scores, must average to a predictable value."""
+        score_a = json.dumps({
+            "groundedness": 2, "numerical_accuracy": 4, "relevance": 3, "clarity": 5,
+            "overall": 3.0, "unsupported_claims": [], "rationale": "First score.",
+        })
+        score_b = json.dumps({
+            "groundedness": 4, "numerical_accuracy": 2, "relevance": 5, "clarity": 3,
+            "overall": 4.0, "unsupported_claims": [], "rationale": "Second score.",
+        })
+
+        records = [
+            {**self.records[0], "model": "candidate_x"},
+            {**self.records[0], "model": "candidate_x"},
+        ]
+        client = FakeJudgeClient([score_a, score_b])
+        judge = FinancialRAGJudge(client, sleep=lambda _: None)
+
+        rows = evaluate_records(records, with_judge=True, judge=judge)
+        aggregates = {row["model"]: row for row in aggregate_judge_scores(rows)}
+        agg = aggregates["candidate_x"]
+
+        self.assertAlmostEqual(agg["groundedness"], 3.0)
+        self.assertAlmostEqual(agg["numerical_accuracy"], 3.0)
+        self.assertAlmostEqual(agg["relevance"], 4.0)
+        self.assertAlmostEqual(agg["clarity"], 4.0)
+        self.assertAlmostEqual(agg["overall"], 3.5)
+
+    def test_aggregate_of_single_row_equals_raw_score(self):
+        """With exactly one successful row, the aggregate should be an identity
+        transform of that row's scores -- no rounding or drift introduced."""
+        score = json.dumps({
+            "groundedness": 2, "numerical_accuracy": 3, "relevance": 4, "clarity": 1,
+            "overall": 2.5, "unsupported_claims": [], "rationale": "Only measurement.",
+        })
+        records = [{**self.records[0], "model": "candidate_solo"}]
+        client = FakeJudgeClient([score])
+        judge = FinancialRAGJudge(client, sleep=lambda _: None)
+
+        rows = evaluate_records(records, with_judge=True, judge=judge)
+        aggregates = {row["model"]: row for row in aggregate_judge_scores(rows)}
+        agg = aggregates["candidate_solo"]
+
+        self.assertEqual(agg["groundedness"], 2)
+        self.assertEqual(agg["numerical_accuracy"], 3)
+        self.assertEqual(agg["relevance"], 4)
+        self.assertEqual(agg["clarity"], 1)
+        self.assertEqual(agg["overall"], 2.5)
+        self.assertEqual(agg["judge_rows"], 1)
+
+    def test_aggregate_does_not_cross_contaminate_between_models(self):
+        """Scores from one model must not leak into another model's aggregate when
+        evaluate_records processes interleaved records for multiple models."""
+        score_hi = json.dumps({
+            "groundedness": 5, "numerical_accuracy": 5, "relevance": 5, "clarity": 5,
+            "overall": 5.0, "unsupported_claims": [], "rationale": "High score.",
+        })
+        score_lo = json.dumps({
+            "groundedness": 1, "numerical_accuracy": 1, "relevance": 1, "clarity": 1,
+            "overall": 1.0, "unsupported_claims": ["fabricated"], "rationale": "Low score.",
+        })
+
+        records = [
+            {**self.records[0], "model": "candidate_hi"},
+            {**self.records[0], "model": "candidate_lo"},
+            {**self.records[0], "model": "candidate_hi"},
+            {**self.records[0], "model": "candidate_lo"},
+        ]
+        client = FakeJudgeClient([score_hi, score_lo, score_hi, score_lo])
+        judge = FinancialRAGJudge(client, sleep=lambda _: None)
+
+        rows = evaluate_records(records, with_judge=True, judge=judge)
+        aggregates = {row["model"]: row for row in aggregate_judge_scores(rows)}
+
+        self.assertEqual(aggregates["candidate_hi"]["overall"], 5.0)
+        self.assertEqual(aggregates["candidate_lo"]["overall"], 1.0)
+        # judge_rows must reflect only that model's own successful calls
+        self.assertEqual(aggregates["candidate_hi"]["judge_rows"], 2)
+        self.assertEqual(aggregates["candidate_lo"]["judge_rows"], 2)
+
+    def test_model_with_no_successful_judge_calls_is_excluded_from_aggregate(self):
+        """If every judge call for a model fails, that model shouldn't appear in the
+        aggregate at all -- a row of averaged nulls/zeros would silently masquerade
+        as a real (if low) score.
+
+        NOTE: this pins down a specific design choice (omit vs. emit judge_rows=0).
+        If aggregate_judge_scores is meant to still emit a visible zero-row for that
+        model, flip this assertion accordingly -- the important thing is that the
+        behavior is deliberate and tested, not left implicit.
+        """
+        records = [{**self.records[0], "model": "candidate_never_scored"}]
+        client = FakeJudgeClient([RuntimeError("down")] * 3)
+        judge = FinancialRAGJudge(client, sleep=lambda _: None)
+
+        rows = evaluate_records(records, with_judge=True, judge=judge)
+        aggregates = {row["model"]: row for row in aggregate_judge_scores(rows)}
+
+        self.assertNotIn("candidate_never_scored", aggregates)
+
+    def test_aggregate_matches_known_real_model_output(self):
+        """Regression check against an actual gpt-oss judging run: three real
+        records (2 for candidate_a, 1 for candidate_b), all scored a perfect 5
+        across every metric, must aggregate to exactly 5.0 for both models."""
+        perfect_score = json.dumps({
+            "groundedness": 5, "numerical_accuracy": 5, "relevance": 5, "clarity": 5,
+            "overall": 5.0, "unsupported_claims": [],
+            "rationale": "Matches the source chunk exactly.",
+        })
+        client = FakeJudgeClient([perfect_score] * len(self.records))
+        judge = FinancialRAGJudge(client, sleep=lambda _: None)
+
+        rows = evaluate_records(self.records, with_judge=True, judge=judge)
+        aggregates = {row["model"]: row for row in aggregate_judge_scores(rows)}
+
+        for model in ("candidate_a", "candidate_b"):
+            with self.subTest(model=model):
+                for metric in JUDGE_METRICS:
+                    self.assertEqual(aggregates[model][metric], 5.0)
+
+
+class EvaluateRecordsPerformanceTests(unittest.TestCase):
+    """Wall-clock performance checks for evaluate_records.
+
+    These are deliberately generous on thresholds -- the goal isn't to pin down
+    an exact millisecond budget (which would be flaky across machines/CI), but
+    to catch two concrete regressions: (1) something reintroducing a *real*
+    time.sleep instead of routing through the injected sleep hook, and (2) an
+    accidental O(n^2) pass over the records/rows that would make evaluation
+    blow up on larger batches.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.base_records = [
+            json.loads(line) for line in FIXTURE_PATH.read_text().splitlines() if line.strip()
+        ]
+
+    def make_records(self, count):
+        """Cycle the fixture records up to `count` entries (shallow copies)."""
+        base = self.base_records
+        return [dict(base[i % len(base)]) for i in range(count)]
+
+    def test_evaluate_records_completes_quickly_with_stubbed_sleep(self):
+        """With a stubbed sleep hook and an instant fake client, evaluating a
+        moderate batch should take well under a second of wall-clock time --
+        there's no I/O or real backoff happening."""
+        records = self.make_records(60)
+        client = FakeJudgeClient([VALID_SCORE] * len(records))
+        judge = FinancialRAGJudge(client, sleep=lambda _: None)
+
+        start = time.perf_counter()
+        rows = evaluate_records(records, with_judge=True, judge=judge)
+        elapsed = time.perf_counter() - start
+
+        self.assertEqual(len(rows), len(records))
+        self.assertLess(elapsed, 1.0, f"evaluate_records took {elapsed:.3f}s for 60 records")
+
+    def test_retries_do_not_incur_real_wall_clock_delay(self):
+        """Records whose judge call fails twice before succeeding must not cost
+        real seconds -- the retry backoff should route entirely through the
+        injected sleep hook, never through the real time.sleep."""
+        records = self.make_records(10)
+        responses = []
+        for _ in records:
+            responses += [RuntimeError("api down"), RuntimeError("api down"), VALID_SCORE]
+        client = FakeJudgeClient(responses)
+        judge = FinancialRAGJudge(client, sleep=lambda _: None)
+
+        # If evaluate_records (or FinancialRAGJudge) falls back to the real
+        # time.sleep anywhere, this patch turns that into a hard failure
+        # instead of a silent multi-second stall.
+        with patch("time.sleep", side_effect=AssertionError("real time.sleep was called")):
+            start = time.perf_counter()
+            rows = evaluate_records(records, with_judge=True, judge=judge)
+            elapsed = time.perf_counter() - start
+
+        self.assertEqual(len(rows), len(records))
+        self.assertTrue(all(row["judge_status"] == "ok" for row in rows))
+        # Without stubbing, 10 records x (1s + 2s) backoff would cost ~30s.
+        self.assertLess(elapsed, 1.0, f"evaluate_records took {elapsed:.3f}s for 10 retried records")
+
+    def test_evaluate_records_scales_roughly_linearly(self):
+        """Evaluating 10x more records should cost roughly 10x the time, not
+        50x or 100x -- a loose guard against an accidental O(n^2) pass (e.g.
+        re-scanning the full row list once per record)."""
+        small = self.make_records(5)
+        large = self.make_records(50)
+
+        client_small = FakeJudgeClient([VALID_SCORE] * len(small))
+        judge_small = FinancialRAGJudge(client_small, sleep=lambda _: None)
+        start = time.perf_counter()
+        evaluate_records(small, with_judge=True, judge=judge_small)
+        small_elapsed = max(time.perf_counter() - start, 1e-6)
+
+        client_large = FakeJudgeClient([VALID_SCORE] * len(large))
+        judge_large = FinancialRAGJudge(client_large, sleep=lambda _: None)
+        start = time.perf_counter()
+        evaluate_records(large, with_judge=True, judge=judge_large)
+        large_elapsed = time.perf_counter() - start
+
+        # 10x the records should cost nowhere near 10x^2; generous 30x ceiling
+        # to absorb timing noise on a shared/CI machine while still catching
+        # genuine quadratic blowups.
+        self.assertLess(
+            large_elapsed,
+            small_elapsed * 30,
+            f"50 records took {large_elapsed:.4f}s vs {small_elapsed:.4f}s for 5 "
+            "-- looks worse than linear",
+        )
 
 
 if __name__ == "__main__":

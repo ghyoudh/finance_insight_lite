@@ -866,6 +866,7 @@ class FinancialRAGAgent:
             "confidence": confidence,
             "verification": verification,
             "relevant_docs_count": len(relevant_docs),
+            "source_texts": [doc.page_content for doc in relevant_docs],
             "chart": chart_data,
             "self_refine_attempts": refine_result["attempts_made"],
             "self_refine_converged": refine_result["self_refine_converged"],

@@ -72,6 +72,21 @@ def load_history(session_id: str) -> List[Dict[str, Any]]:
     return history
 
 
+def load_all_history() -> List[Dict[str, Any]]:
+    with _get_conn() as conn:
+        rows = conn.execute(
+            "SELECT entry_json FROM chat_entries ORDER BY session_id ASC, id ASC",
+        ).fetchall()
+
+    history: List[Dict[str, Any]] = []
+    for row in rows:
+        try:
+            history.append(json.loads(row["entry_json"]))
+        except json.JSONDecodeError:
+            continue
+    return history
+
+
 def clear_session(session_id: str) -> None:
     with _get_conn() as conn:
         conn.execute("DELETE FROM chat_entries WHERE session_id = ?", (session_id,))

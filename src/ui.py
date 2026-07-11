@@ -383,6 +383,7 @@ if st.session_state.pending_question:
             'confidence': result.get('confidence'),
             'verification': result.get('verification'),
             'relevant_docs_count': result.get('relevant_docs_count'),
+            'source_chunks': result.get('source_texts'),
             'chart': result.get('chart')  # Use chart from result
         }
         st.session_state.chat_history.append(chat_entry)
@@ -407,6 +408,7 @@ if user_question:
         'confidence': result.get('confidence'),
         'verification': result.get('verification'),
         'relevant_docs_count': result.get('relevant_docs_count'),
+        'source_chunks': result.get('source_texts'),
         'chart': result.get('chart')  # Use chart from result
     }
     st.session_state.chat_history.append(chat_entry)
