@@ -156,65 +156,164 @@ def pdf_to_documents_fast(pdf_path):
 # OPTIMIZATION 4: Smart Excel Processing
 # ============================================================================
 
+def _looks_numeric(value):
+    """Best-effort check for whether a cell value reads as a number/percentage."""
+    if pd.isna(value):
+        return False
+    if isinstance(value, (int, float)):
+        return True
+    text = str(value).strip()
+    if text == "":
+        return False
+    text = text.replace(",", "").replace("%", "").replace("+", "").replace("-", "", 1)
+    try:
+        float(text)
+        return True
+    except ValueError:
+        return False
+
+
+def _is_probable_header_row(row_values):
+    """
+    Heuristic for 'is this row a column-header row?' — used because report-style
+    sheets (title row, section-title rows, real column headers, data rows all
+    mixed in one sheet) make pandas' default header=0 unreliable: it grabs
+    whatever is in row 0 (often a merged title cell), leaving the *real*
+    column headers — which can appear several rows further down, and can
+    differ per section — misread as data and named 'Unnamed: N'.
+
+    A header row: has at least 2 non-null cells, and most of those cells are
+    NOT numeric (column headers are text; data rows are mostly numbers).
+    A single-cell row (e.g. a merged title/section banner) is NOT treated as
+    a header — it has nothing to attach to a column index.
+    """
+    non_null = [v for v in row_values if pd.notna(v) and str(v).strip() != ""]
+    if len(non_null) < 2:
+        return False
+    numeric_count = sum(1 for v in non_null if _looks_numeric(v))
+    return (numeric_count / len(non_null)) < 0.3
+
+
 def excel_to_documents_optimized(excel_path, sheet_name=None, chunk_size=1500):
     """
-    Optimized Excel loading with chunking for large files
-    
+    Optimized Excel loading — one row = one explicit "column: value" sentence,
+    one row = one independent Document, with column headers detected
+    dynamically per section rather than trusting pandas' default row-0 header.
+
+    WHY (fix for row/label attribution errors seen downstream in the RAG
+    pipeline): two compounding problems in the previous implementation:
+
+    1. `df.to_string(index=False)` rendered a whole sheet as one
+       whitespace-aligned block. That format relies on visual column
+       alignment to tie a value to its header — which breaks for RTL/Arabic
+       text and gives an LLM no explicit delimiter. Combined with a generic
+       character-based text splitter downstream, a single chunk could easily
+       contain several rows with no clear boundary between them, so the LLM
+       could pull a real number from the WRONG row of a table with several
+       similarly-worded labels.
+
+    2. For "report-style" sheets — a title in the very first cell, then
+       section banners, then the *real* column headers several rows further
+       down, all mixed with the data in one sheet — pandas' default
+       `header=0` grabs the title row as the header, so genuine columns come
+       back named 'Unnamed: 1', 'Unnamed: 2', etc. Even isolating rows
+       individually doesn't help if every value is labeled 'Unnamed: N'
+       instead of its real column name.
+
+    This version reads the sheet with no assumed header (`header=None`),
+    walks it top to bottom, and dynamically detects header rows (a row of
+    mostly-text cells) to use as the active column names for the data rows
+    that follow — updating them again whenever a new header row appears
+    (handles sheets with multiple sections, each with its own headers). Each
+    data row is then rendered as an explicit "column_name: value | ..."
+    sentence and stored as its own Document, so a row can never be split in
+    half or silently merged with a neighboring row by a downstream
+    character-based text splitter.
+
     Args:
         excel_path: Path to Excel file
         sheet_name: Specific sheet or None for all
-        chunk_size: Number of rows per chunk for large sheets
+        chunk_size: Number of rows per "Part" grouping for very large sheets
+            (kept only to preserve manageable metadata/chunk sizes; each row
+            is still embedded as an individual sentence within its part)
     """
     print(f"Loading Excel: {excel_path}")
     documents = []
-    
-    # Read Excel file
+
     excel_file = pd.ExcelFile(excel_path)
     sheets_to_process = [sheet_name] if sheet_name else excel_file.sheet_names
-    
+
     for sheet in sheets_to_process:
-        df = pd.read_excel(excel_file, sheet_name=sheet)
-        
-        # If sheet is large, chunk it
-        if len(df) > chunk_size:
-            num_chunks = (len(df) + chunk_size - 1) // chunk_size
-            
-            for chunk_num in range(num_chunks):
-                start_idx = chunk_num * chunk_size
-                end_idx = min((chunk_num + 1) * chunk_size, len(df))
-                chunk_df = df.iloc[start_idx:end_idx]
-                
-                text_content = f"Sheet: {sheet} (Part {chunk_num + 1}/{num_chunks})\n\n"
-                text_content += chunk_df.to_string(index=False)
-                
-                document = Document(
-                    page_content=text_content,
-                    metadata={
-                        "source": os.path.basename(excel_path),
-                        "sheet_name": sheet,
-                        "chunk": chunk_num + 1,
-                        "total_chunks": num_chunks,
-                        "rows": len(chunk_df),
-                        "columns": len(chunk_df.columns)
-                    }
-                )
-                documents.append(document)
-        else:
-            # Process entire sheet at once
-            text_content = f"Sheet: {sheet}\n\n"
-            text_content += df.to_string(index=False)
-            
+        raw_df = pd.read_excel(excel_file, sheet_name=sheet, header=None)
+
+        if raw_df.empty:
+            continue
+
+        current_headers = None  # dict: column_index -> header text
+        row_sentences = []
+
+        for _, row in raw_df.iterrows():
+            row_values = list(row)
+
+            non_null = [v for v in row_values if pd.notna(v) and str(v).strip() != ""]
+            if not non_null:
+                continue  # blank separator row
+
+            if _is_probable_header_row(row_values):
+                current_headers = {
+                    col_idx: str(val).strip()
+                    for col_idx, val in enumerate(row_values)
+                    if pd.notna(val) and str(val).strip() != ""
+                }
+                continue
+
+            if len(non_null) == 1:
+                # A single populated cell with no header context yet (or amid
+                # data) is a title/section banner, not a data row — skip it
+                # as a row, but treat it as free context for the sentences
+                # that immediately follow within this section.
+                continue
+
+            parts = []
+            for col_idx, val in enumerate(row_values):
+                if pd.isna(val) or str(val).strip() == "":
+                    continue
+                header_label = (current_headers or {}).get(col_idx, f"Column {col_idx + 1}")
+                parts.append(f"{header_label}: {val}")
+
+            sentence = " | ".join(parts)
+            if sentence:
+                row_sentences.append(sentence)
+
+        if not row_sentences:
+            continue
+
+        total_rows = len(row_sentences)
+
+        # For very large sheets, group rows into numbered "parts" purely for
+        # metadata/traceability — but each row remains its own Document, so
+        # a part boundary never splits a row's data.
+        num_parts = (total_rows + chunk_size - 1) // chunk_size if total_rows > chunk_size else 1
+
+        for row_idx, sentence in enumerate(row_sentences):
+            part_num = (row_idx // chunk_size) + 1 if num_parts > 1 else None
+
+            header = f"Sheet: {sheet}"
+            if part_num is not None:
+                header += f" (Part {part_num}/{num_parts})"
+
             document = Document(
-                page_content=text_content,
+                page_content=f"{header}\n{sentence}",
                 metadata={
                     "source": os.path.basename(excel_path),
                     "sheet_name": sheet,
-                    "rows": len(df),
-                    "columns": len(df.columns)
+                    "row": row_idx + 1,
+                    "total_rows": total_rows,
+                    **({"chunk": part_num, "total_chunks": num_parts} if part_num is not None else {}),
                 }
             )
             documents.append(document)
-    
+
     print(f"✓ Loaded {len(documents)} documents from Excel")
     return documents
 
