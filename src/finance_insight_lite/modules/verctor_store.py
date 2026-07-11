@@ -3,11 +3,9 @@ import json
 import pickle
 from functools import lru_cache
 from pathlib import Path
-
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
-
 
 CHUNK_SIZE = 1500
 CHUNK_OVERLAP = 100
@@ -37,7 +35,6 @@ def _cache_key(documents, source_paths):
             ).hexdigest()
             for document in documents
         ]
-
     configuration = {
         "sources": source_fingerprints,
         "chunk_size": CHUNK_SIZE,
@@ -59,7 +56,6 @@ def _load_or_create_chunks(documents, chunks_file):
             chunks = pickle.load(cache_file)
         print(f"📦 Loaded {len(chunks)} chunks from cache")
         return chunks
-
     text_splitter = RecursiveCharacterTextSplitter(
         chunk_size=CHUNK_SIZE,
         chunk_overlap=CHUNK_OVERLAP,
@@ -73,31 +69,37 @@ def _load_or_create_chunks(documents, chunks_file):
 
 
 def build_vector_db(documents, db_path="./database", source_paths=None, cache_dir="data/vector_cache"):
-    """
-    Build or load a cached FAISS vector database.
-
-    The cache key includes the ordered hashes of the source files and the
-    chunking/embedding settings. `db_path` is retained for API compatibility;
-    the reusable index is stored below `cache_dir`.
-    """
+  
     if not documents:
         raise ValueError("Cannot build a vector database without documents")
-
     cache_path = Path(cache_dir) / _cache_key(documents, source_paths)
     cache_path.mkdir(parents=True, exist_ok=True)
     index_file = cache_path / "index.faiss"
     metadata_file = cache_path / "index.pkl"
+    hybrid_chunks_file = cache_path / "chunks_for_hybrid.pkl"
     embeddings = get_embedding_model()
 
     if index_file.exists() and metadata_file.exists():
         print(f"📦 Loading FAISS index from cache: {cache_path}")
-        return FAISS.load_local(
+        vector_db = FAISS.load_local(
             str(cache_path), embeddings, allow_dangerous_deserialization=True
         )
+        if hybrid_chunks_file.exists():
+            with open(hybrid_chunks_file, "rb") as f:
+                chunks = pickle.load(f)
+        else:
+            chunks = _load_or_create_chunks(documents, cache_path / "chunks.pkl")
+            with open(hybrid_chunks_file, "wb") as f:
+                pickle.dump(chunks, f)
+        return vector_db, chunks
 
     print(f"Building vector DB from {len(documents)} documents")
     chunks = _load_or_create_chunks(documents, cache_path / "chunks.pkl")
     vector_db = FAISS.from_documents(documents=chunks, embedding=embeddings)
     vector_db.save_local(str(cache_path))
+
+    with open(hybrid_chunks_file, "wb") as f:
+        pickle.dump(chunks, f)
+
     print(f"✓ Cached FAISS index at: {cache_path}")
-    return vector_db
+    return vector_db, chunks
