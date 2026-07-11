@@ -67,7 +67,7 @@ RULES:
             )
             variants = [q.strip() for q in result.queries if q and q.strip()]
         except Exception as e:
-            print(f"⚠️ Query expansion error: {e} — سيتم الاعتماد على السؤال الأصلي فقط")
+            print(f" Query expansion error: {e} — سيتم الاعتماد على السؤال الأصلي فقط")
             variants = []
 
         all_queries = [question] + variants
@@ -80,5 +80,5 @@ RULES:
                 seen.add(key)
                 deduped.append(q)
 
-        print(f"🔎 توسعة السؤال: {len(deduped)} صياغة (شامل الأصلي)")
+        print(f"توسعة السؤال: {len(deduped)} صياغة (شامل الأصلي)")
         return deduped
