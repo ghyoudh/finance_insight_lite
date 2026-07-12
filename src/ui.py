@@ -180,18 +180,20 @@ with st.sidebar:
                     status_text.empty()
 
                     # Build vector database
+                
                     with st.spinner("Building vector database..."):
-                        st.session_state.vector_db = build_vector_db(
+                         st.session_state.vector_db, st.session_state.chunks = build_vector_db(
                             all_documents,
                             db_path="./database",
-                            source_paths=uploaded_file_paths,
+                              source_paths=uploaded_file_paths,
                         )
 
                     # Create agent with toggle for Self-RAG
                     with st.spinner("Initializing agent..."):
                         st.session_state.agent = FinancialRAGAgent(
-                            st.session_state.vector_db,
-                        )
+                        st.session_state.vector_db,
+                          chunks=st.session_state.chunks,
+                             )
 
                     processing_time = time.time() - start_time
 
