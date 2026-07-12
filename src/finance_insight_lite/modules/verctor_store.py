@@ -69,7 +69,23 @@ def _load_or_create_chunks(documents, chunks_file):
 
 
 def build_vector_db(documents, db_path="./database", source_paths=None, cache_dir="data/vector_cache"):
-  
+    """
+    Build or load a cached FAISS vector database.
+    The cache key includes the ordered hashes of the source files and the
+    chunking/embedding settings. `db_path` is retained for API compatibility;
+    the reusable index is stored below `cache_dir`.
+
+    ---
+    تعديل (Hybrid Search support): نخزّن قائمة الـ chunks نفسها (بعد
+    التقطيع، قبل التحويل لـ embeddings) بجانب الـ FAISS index تحت اسم
+    "chunks_for_hybrid.pkl". هذا ضروري عشان HybridRetriever يقدر يبني
+    فهرس BM25 (لفظي) فوق نفس المستندات بالضبط اللي بُني منها الـ vector
+    index الدلالي — بدون هذا الملف، BM25 والـ vector search راح يشتغلون
+    على مجموعتين مختلفتين من الـ chunks وتفقد ميزة الدمج بـ RRF.
+
+    يرجّع الآن (vector_db, chunks) بدل vector_db لوحدها، عشان تقدر تمرر
+    chunks مباشرة لـ HybridRetriever بدون إعادة تحميلها من الملف يدوياً.
+    """
     if not documents:
         raise ValueError("Cannot build a vector database without documents")
     cache_path = Path(cache_dir) / _cache_key(documents, source_paths)
@@ -84,10 +100,14 @@ def build_vector_db(documents, db_path="./database", source_paths=None, cache_di
         vector_db = FAISS.load_local(
             str(cache_path), embeddings, allow_dangerous_deserialization=True
         )
+        # جديد: تحميل نفس الـ chunks المخزّنة وقت البناء الأول، عشان
+        # HybridRetriever يستخدم BM25 على نفس المجموعة بالضبط
         if hybrid_chunks_file.exists():
             with open(hybrid_chunks_file, "rb") as f:
                 chunks = pickle.load(f)
         else:
+            # كاش قديم من قبل هذا التعديل — نعيد بناء الـ chunks فقط
+            # (نفس منطق _load_or_create_chunks) بدون إعادة الفهرسة الدلالية
             chunks = _load_or_create_chunks(documents, cache_path / "chunks.pkl")
             with open(hybrid_chunks_file, "wb") as f:
                 pickle.dump(chunks, f)
@@ -98,6 +118,7 @@ def build_vector_db(documents, db_path="./database", source_paths=None, cache_di
     vector_db = FAISS.from_documents(documents=chunks, embedding=embeddings)
     vector_db.save_local(str(cache_path))
 
+    # جديد: خزّن نفس الـ chunks لاستخدام HybridRetriever لاحقاً
     with open(hybrid_chunks_file, "wb") as f:
         pickle.dump(chunks, f)
 
