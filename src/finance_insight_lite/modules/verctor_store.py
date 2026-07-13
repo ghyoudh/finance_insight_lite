@@ -100,14 +100,11 @@ def build_vector_db(documents, db_path="./database", source_paths=None, cache_di
         vector_db = FAISS.load_local(
             str(cache_path), embeddings, allow_dangerous_deserialization=True
         )
-        # جديد: تحميل نفس الـ chunks المخزّنة وقت البناء الأول، عشان
-        # HybridRetriever يستخدم BM25 على نفس المجموعة بالضبط
         if hybrid_chunks_file.exists():
             with open(hybrid_chunks_file, "rb") as f:
                 chunks = pickle.load(f)
         else:
-            # كاش قديم من قبل هذا التعديل — نعيد بناء الـ chunks فقط
-            # (نفس منطق _load_or_create_chunks) بدون إعادة الفهرسة الدلالية
+        بدون إعادة الفهرسة الدلالية
             chunks = _load_or_create_chunks(documents, cache_path / "chunks.pkl")
             with open(hybrid_chunks_file, "wb") as f:
                 pickle.dump(chunks, f)
@@ -118,7 +115,6 @@ def build_vector_db(documents, db_path="./database", source_paths=None, cache_di
     vector_db = FAISS.from_documents(documents=chunks, embedding=embeddings)
     vector_db.save_local(str(cache_path))
 
-    # جديد: خزّن نفس الـ chunks لاستخدام HybridRetriever لاحقاً
     with open(hybrid_chunks_file, "wb") as f:
         pickle.dump(chunks, f)
 
