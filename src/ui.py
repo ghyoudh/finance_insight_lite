@@ -108,6 +108,40 @@ if 'vector_db' not in st.session_state:
 if 'pending_question' not in st.session_state:
     st.session_state.pending_question = None
 
+
+# ============================================================================
+# PERF FIX: trim chat history before handing it to the LLM pipeline
+# ============================================================================
+def build_llm_chat_history(chat_history, max_turns: int = 6):
+    """
+    st.session_state.chat_history stores the FULL chat_entry dict per turn —
+    including 'source_chunks' (the entire text of every retrieved document
+    chunk for that turn) and 'chart' (a full Plotly figure JSON blob, which
+    can be large). That whole growing list was being passed straight into
+    FinancialRAGAgent.process_query(chat_history=...), which threads it
+    into the answer-generation prompt as-is.
+
+    Effect: every single question re-sent the full chunks + chart JSON of
+    every PREVIOUS question in the conversation, on top of its own new
+    context. The prompt therefore grows roughly linearly with how long the
+    conversation has been going — which directly explains responses that
+    get progressively slower (and can eventually blow past the model's
+    context window) the longer a chat session runs, even though nothing
+    changed in the backend logic itself.
+
+    The LLM only needs the conversational Q/A text to resolve follow-ups
+    like "why?" or "and for last quarter?" — not the raw chunks/chart data
+    (those live in `context`, freshly retrieved for the *current* question
+    every time). So: keep only question/answer pairs, and only the most
+    recent `max_turns` of them.
+    """
+    recent = chat_history[-max_turns:] if max_turns else chat_history
+    return [
+        {"question": turn.get("question", ""), "answer": turn.get("answer", "")}
+        for turn in recent
+    ]
+
+
 # Sidebar
 with st.sidebar:
     col1, col2 = st.columns([2.5, 4]) # Adjust ratios for width
@@ -375,7 +409,10 @@ if st.session_state.pending_question:
     else:
         # Process the question
         with st.spinner("🤔 Thinking..."):
-            result = st.session_state.agent.process_query(question, chat_history=st.session_state.chat_history)
+            result = st.session_state.agent.process_query(
+                question,
+                chat_history=build_llm_chat_history(st.session_state.chat_history),
+            )
 
         # Save to history
         chat_entry = {
@@ -400,7 +437,10 @@ if user_question:
 
     # Process query
     with st.spinner("🤔 Thinking..."):
-        result = st.session_state.agent.process_query(user_question, chat_history=st.session_state.chat_history)
+        result = st.session_state.agent.process_query(
+            user_question,
+            chat_history=build_llm_chat_history(st.session_state.chat_history),
+        )
 
     # Save to history
     chat_entry = {
