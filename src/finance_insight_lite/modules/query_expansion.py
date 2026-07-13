@@ -3,16 +3,6 @@ from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
 
 
-# ============================================================================
-# Query Expansion — يولّد صياغات بديلة للسؤال قبل الاسترجاع
-# ============================================================================
-#
-# الهدف: تقريب صياغة السؤال من صياغة المستندات، عشان يستفيد منه كل من
-# BM25 (لفظي) والـ vector search (دلالي) بنفس الوقت — بدل ما نعتمد فقط
-# على قوة موديل الـ embedding بالتقاط المعنى.
-
-
-
 class ExpandedQueries(BaseModel):
     """قائمة الصياغات البديلة للسؤال الأصلي"""
     queries: List[str] = Field(
@@ -28,7 +18,11 @@ class ExpandedQueries(BaseModel):
 
 
 class QueryExpander:
-
+    """
+    يولّد صياغات بديلة (paraphrases) لسؤال المستخدم عبر LLM، بهدف تحسين
+    نتائج الاسترجاع (Hybrid: BM25 + vector) لما السؤال يكون بمعنى مختلف
+    عن صياغة المستند الحرفية.
+    """
 
     def __init__(self, llm, num_variants: int = 3):
         self.llm = llm
@@ -56,18 +50,13 @@ RULES:
         ])
 
     def expand(self, question: str) -> List[str]:
-        """
-        يرجّع قائمة تحتوي على السؤال الأصلي + الصياغات البديلة (فريدة،
-        بدون تكرار). لو فشل التوليد لأي سبب، يرجّع السؤال الأصلي فقط
-        (fail-safe — النظام يستمر يشتغل بدون توسعة بدل ما يتوقف).
-        """
         try:
             result: ExpandedQueries = self.structured_llm.invoke(
                 self.expansion_prompt.format(question=question)
             )
             variants = [q.strip() for q in result.queries if q and q.strip()]
         except Exception as e:
-            print(f" Query expansion error: {e} — سيتم الاعتماد على السؤال الأصلي فقط")
+            print(f"⚠️ Query expansion error: {e} — سيتم الاعتماد على السؤال الأصلي فقط")
             variants = []
 
         all_queries = [question] + variants
@@ -80,5 +69,5 @@ RULES:
                 seen.add(key)
                 deduped.append(q)
 
-        print(f"توسعة السؤال: {len(deduped)} صياغة (شامل الأصلي)")
+        print(f"🔎 توسعة السؤال: {len(deduped)} صياغة (شامل الأصلي)")
         return deduped
