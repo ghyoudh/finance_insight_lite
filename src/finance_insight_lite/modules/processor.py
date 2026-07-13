@@ -387,4 +387,4 @@ def clear_cache(cache_dir="data/cache", vector_cache_dir="data/vector_cache"):
             shutil.rmtree(cache_path)
             cache_path.mkdir(parents=True)
             cleared = True
-    print("✓ Cache cleared" if cleared else "No cache to clear")
+    print("✓ Cache cleared" if cleared else "No cache to clear") 
