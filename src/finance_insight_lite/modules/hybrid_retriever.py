@@ -9,6 +9,10 @@ from rank_bm25 import BM25Okapi
 # ============================================================================
 # Hybrid Retriever — BM25 (لفظي) + Vector Search (دلالي) عبر RRF
 # ============================================================================
+#
+# يدعم الاسترجاع بعدة صياغات للسؤال بنفس الوقت (متكامل مع QueryExpander)،
+# ويدمج كل النتائج بـ Reciprocal Rank Fusion واحد موحّد قبل ما تدخل على
+# CRAGRetriever للفلترة الدلالية النهائية.
 
 
 def _tokenize(text: str) -> List[str]:
@@ -26,7 +30,15 @@ def _tokenize(text: str) -> List[str]:
 
 
 class HybridRetriever:
-   
+    """
+    يبني فهرس BM25 مرة وحدة فوق نفس الـ chunks اللي بُني منها الـ FAISS
+    vector_db، وبعدين يدمج نتائج البحث اللفظي والدلالي عبر RRF.
+
+    مهم: `documents` لازم تكون نفس قائمة الـ Document objects (بعد الـ
+    chunking) اللي استُخدمت لبناء الـ vector_db بالضبط — عشان النتائج
+    تتطابق. أسهل طريقة: خزّنها وقت `build_vector_db` (مثلاً كـ pickle
+    بجانب الـ FAISS index) وحمّلها هنا.
+    """
 
     def __init__(self, vector_db, documents: List[Any], rrf_k: int = 60):
         self.vector_db = vector_db
@@ -62,7 +74,14 @@ class HybridRetriever:
             return []
 
     def _per_query_hits(self, query: str, k_max: int):
-     
+        """
+        كل الشغل الخاص بصياغة سؤال واحدة (BM25 + vector) — يُنفّذ كوحدة
+        واحدة على thread منفصل، عشان الصياغات المتعددة (أصلي + موسّعة من
+        QueryExpander) تشتغل بالتوازي بدل التسلسل. يرجّع قائمة hits على
+        شكل (key, doc, rank) لكل من BM25 والـ vector، بدون أي حساب RRF
+        هنا — الدمج (اللي لازم يصير بالتسلسل على نتيجة كل الـ threads)
+        يبقى بمكان واحد بالدالة اللي تستدعي هذي.
+        """
         hits = []
 
         bm25_idx = self._bm25_ranked_indices(query, top_n=k_max)
@@ -77,7 +96,15 @@ class HybridRetriever:
         return hits
 
     def _fuse(self, queries: List[str], k_max: int):
-    
+        """
+        PERF FIX: قبل كذا، كل query بالقائمة كان يُعالج بالتسلسل (BM25 كامل
+        على الكوربص + نداء FAISS منفصل لكل واحدة). مع 3-4 صياغات من
+        QueryExpander، هذا يعني تكرار العملية كاملة 3-4 مرات بالتتابع قبل
+        حتى ما توصل لأي نداء LLM. الحين تشتغل كل الصياغات بالتوازي عبر
+        ThreadPoolExecutor، ثم يصير دمج RRF بالتسلسل على النتائج الجاهزة —
+        نفس الحساب الرياضي بالضبط (لا تغيير على النتيجة النهائية أو
+        الترتيب)، بس الوقت الكلي يصير أقرب لأطول query لا مجموعهم كلهم.
+        """
         rrf_scores: Dict[str, float] = {}
         doc_lookup: Dict[str, Any] = {}
 
@@ -94,10 +121,15 @@ class HybridRetriever:
         return fused, doc_lookup
 
     def retrieve_single(self, query: str, k_max: int) -> List[Any]:
+        """استرجاع hybrid لسؤال واحد فقط (بدون توسعة)."""
         return self.retrieve_multi([query], k_max)
 
     def retrieve_multi(self, queries: List[str], k_max: int) -> List[Any]:
-      
+        """
+        استرجاع hybrid لعدة صياغات للسؤال (أصلي + موسّع)، مدمجة كلها بـ
+        RRF واحد موحّد. كل صياغة تساهم بترتيبها اللفظي والدلالي، والمستند
+        اللي يظهر بأكثر من صياغة/طريقة يرتفع ترتيبه تلقائياً.
+        """
         fused, doc_lookup = self._fuse(queries, k_max)
         top_docs = [doc_lookup[key] for key, _ in fused[:k_max]]
 
@@ -105,7 +137,11 @@ class HybridRetriever:
         return top_docs
 
     def retrieve_with_scores(self, queries: List[str], k_max: int):
-       
+        """
+        نفس retrieve_multi لكن يرجّع أيضاً درجات RRF (بدل درجات cosine
+        الأصلية) عشان يستمر AdaptiveRetrievalDepth.detect_elbow يشتغل
+        بنفس المنطق الموجود بـ CRAGRetriever.
+        """
         fused, doc_lookup = self._fuse(queries, k_max)
         top = fused[:k_max]
         docs = [doc_lookup[key] for key, _ in top]
