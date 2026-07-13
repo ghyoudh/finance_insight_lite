@@ -455,4 +455,4 @@ if user_question:
     }
     st.session_state.chat_history.append(chat_entry)
     chat_db.save_entry(session_id, chat_entry)
-    st.rerun()
+    st.rerun() 
