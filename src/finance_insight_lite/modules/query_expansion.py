@@ -52,7 +52,7 @@ RULES:
     def expand(self, question: str) -> List[str]:
         try:
             result: ExpandedQueries = self.structured_llm.invoke(
-                self.expansion_prompt.format(question=question)
+                self.expansion_prompt.format(question=question) 
             )
             variants = [q.strip() for q in result.queries if q and q.strip()]
         except Exception as e:
