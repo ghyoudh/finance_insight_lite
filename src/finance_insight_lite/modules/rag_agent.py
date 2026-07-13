@@ -54,7 +54,20 @@ class BatchGradeResponse(BaseModel):
 # ============================================================================
 
 class AdaptiveRetrievalDepth:
-  
+    """
+    يحسب حجم نافذة الاسترجاع (k) بشكل ديناميكي بناءً على:
+      - حجم قاعدة البيانات (corpus size)
+      - توزيع درجات التشابه (similarity score distribution) للسؤال الحالي
+
+    ملاحظة: هذا الكلاس عام وقابل لإعادة الاستخدام بإعدادات مختلفة حسب
+    الاستهلاك. مثلاً:
+      - الاسترجاع النصي (CRAGRetriever) يحتاج دقة أعلى -> corpus_divisor أكبر
+        (نافذة أضيق) + k_upper_bound أقل.
+      - استخراج بيانات الرسوم البيانية (FinancialDataExtractor) يحتاج تغطية
+        أوسع (عشان يلقط كل فئات البيانات) -> corpus_divisor أصغر (نافذة أوسع)
+        + k_upper_bound أعلى.
+    """
+
     def __init__(
         self,
         k_min: int = 3,
@@ -129,7 +142,8 @@ class AdaptiveRetrievalDepth:
 # ============================================================================
 
 class TPMRateLimiter:
-   
+
+
     def __init__(self, tpm_limit: int, safety_margin: float = 0.9, window_seconds: float = 60.0):
         self.tpm_limit = tpm_limit
         self.safety_threshold = tpm_limit * safety_margin
@@ -139,9 +153,7 @@ class TPMRateLimiter:
 
     @staticmethod
     def estimate_tokens(text: str) -> int:
-        # تقدير خشن (~3 حروف/توكن، يشمل هامش أمان للنصوص العربية اللي
-        # تستهلك توكنز أكثر من الإنجليزية لكل حرف) — كافٍ لأغراض
-        # الـ pacing فقط، مو المطلوب دقة حسابية فعلية.
+       
         return max(1, len(text) // 3)
 
     def _prune(self, now: float):
@@ -504,7 +516,7 @@ Grade this answer now via the schema.""")
 class SelfRefiningAnswerEngine:
 
     # ========================================================================
- 
+   
     # ========================================================================
 
     def __init__(self, llm, verifier_llm=None, max_refinement_attempts: int = 1,
@@ -512,7 +524,7 @@ class SelfRefiningAnswerEngine:
                  verifier_rate_limiter: Optional["TPMRateLimiter"] = None):
         self.llm = llm
         self.rate_limiter = rate_limiter
-      
+    
         self.verifier = SelfRAGVerifier(verifier_llm or llm, rate_limiter=verifier_rate_limiter)
         self.max_refinement_attempts = max_refinement_attempts
         self.pass_threshold = pass_threshold
@@ -529,32 +541,88 @@ class SelfRefiningAnswerEngine:
 - Use the provided 'Chat History' to understand the context of the current question.
 - If the user asks a follow-up (e.g., "Why?"), refer to the previous data extracted.
 
-### INSTRUCTIONS:
-1. **Analysis**: Provide a brief, professional response regarding the data.
-2. **Recommendations**: Offer 2 actionable suggestions.
-3. **Currency**: Always include the currency (e.g., SAR, USD).
-4. **No raw data**: Never output JSON, code blocks, key-value dumps, or any
-   other raw/structured data format anywhere in your answer. Everything must
-   be written as natural, conversational prose the end user can read directly.
-5. **Never copy-paste from Context**: Do not restate, list, or dump the raw
-   records/rows from the Context verbatim, not even reformatted with different
-   spacing or punctuation. Extract only the specific numbers you need and
-   weave them into your prose analysis (e.g. summarize totals, averages,
-   trends — do not enumerate every single transaction/row).
-6. **Row/label precision in tables**: The Context may contain tables with
-   several rows whose labels are similarly worded (e.g. close variations of
-   the same phrase describing different metrics, periods, or categories).
-   Before using any number, double-check it is taken from the row/label that
-   actually matches what the Question is asking about — not a neighboring row
-   that merely looks similar. If the Question's target is ambiguous between
-   two similarly-named rows, briefly note the ambiguity rather than guessing.
+### GROUNDING RULES (read carefully — this is the most important section):
+- Base every answer on the retrieved Context only. Do not infer causal
+  relationships unless the Context explicitly states them.
+- Do NOT state that one metric causes, explains, drives, or correlates with
+  another metric unless the Context explicitly says so in words. Two
+  numbers appearing near each other, or both being "high"/"low" in the same
+  period, is NOT evidence of a relationship between them — present them as
+  separate, independent facts instead.
+  - Wrong: "Strengths usage rose +80%, which explains the high ROI score."
+  - Right: "Strengths usage rose +80%. Separately, the ROI score was 3.71.
+    The report does not establish a direct relationship between these two
+    metrics."
+- If you are tempted to explain *why* something happened and the Context
+  does not state the reason explicitly, say plainly that the evidence is
+  insufficient to explain the cause — do not fill the gap with a
+  plausible-sounding guess.
+- Classify KPIs using standard business definitions, and base any
+  explanation on what the KPI actually measures (its methodology) — not on
+  assumptions about timing, causality, or unstated context.
+- NEVER invent budgets, percentages, currency amounts (SAR/USD/etc.),
+  timelines, or staffing/headcount numbers unless that exact figure already
+  appears in the Context.
 
-### OUTPUT FORMAT:
-[Your conversational answer]
+### RESPONSE STRUCTURE — decide based on what the question actually asks:
 
-#### Suggestions
-- [Suggestion 1]
-- [Suggestion 2]"""),
+**Case A — Pure extraction/factual question** (asks for a specific number,
+value, count, or fact — e.g. "What is X?", "How many...?", "كم عدد...؟",
+"ما قيمة...؟"):
+- Answer with ONLY the requested fact(s), stated in one or two clear
+  sentences, supported by the number(s) from the Context.
+- Do NOT add an "Analysis" section and do NOT add a "Suggestions" section.
+  If the question doesn't ask for interpretation or recommendations, don't
+  volunteer them.
+- If the fact is genuinely not in the Context, say so plainly instead of
+  guessing.
+
+**Case B — Analysis / explanation / recommendation question** (asks "why",
+"how", "what should we do", asks to compare, evaluate, or advise):
+- Structure your answer in three clearly labeled parts (use the same
+  language as the question for the labels — Arabic labels shown here,
+  mirror in English as Facts / Analysis / Suggestions):
+
+الحقائق:
+[Only what is explicitly stated in the Context, with numbers. No
+interpretation here.]
+
+التحليل:
+[Your interpretation of the facts above, clearly framed as interpretation
+(e.g. "قد يشير هذا إلى..." / "This may suggest..."), never stated as if it
+were a fact from the report. If evidence is insufficient to support an
+interpretation the question is asking for, say so explicitly here instead
+of guessing.]
+
+الاقتراحات:
+[Only include this part if the question actually asks for advice,
+recommendations, or next steps. Each suggestion must be immediately
+followed by the specific evidence from the Context it is based on, in this
+form:
+- التوصية: [qualitative, actionable suggestion — no invented numbers]
+  الدليل: [the specific fact/number from the Context that motivates it]
+Keep suggestions qualitative/directional (e.g. "consider increasing
+investment in coaching quality" — not "invest 15,000 SAR in coaching"),
+unless the Context itself already contains the number you're citing.]
+
+### OTHER RULES:
+- **Currency**: Always include the currency (e.g., SAR, USD) — but only
+  when citing a figure that actually appears in the Context.
+- **No raw data**: Never output JSON, code blocks, key-value dumps, or any
+  other raw/structured data format anywhere in your answer. Everything must
+  be written as natural, conversational prose the end user can read directly.
+- **Never copy-paste from Context**: Do not restate, list, or dump the raw
+  records/rows from the Context verbatim, not even reformatted with different
+  spacing or punctuation. Extract only the specific numbers you need and
+  weave them into your prose (e.g. summarize totals, averages, trends — do
+  not enumerate every single transaction/row).
+- **Row/label precision in tables**: The Context may contain tables with
+  several rows whose labels are similarly worded (e.g. close variations of
+  the same phrase describing different metrics, periods, or categories).
+  Before using any number, double-check it is taken from the row/label that
+  actually matches what the Question is asking about — not a neighboring row
+  that merely looks similar. If the Question's target is ambiguous between
+  two similarly-named rows, briefly note the ambiguity rather than guessing."""),
             ("human", "Chat History: {chat_history}\n\nQuestion: {query}\n\nContext: {context}")
         ])
 
@@ -565,6 +633,17 @@ previous answer that failed an accuracy check.
 ### LANGUAGE:
 - Keep the same language as the previous answer (match the user's question
   language: Arabic question -> Arabic answer, English question -> English answer).
+
+### GROUNDING RULES (apply these even while revising):
+- Do NOT state that one metric causes, explains, drives, or correlates with
+  another metric unless the Context explicitly says so in words. If the
+  previous answer did this, remove the causal claim and present the two
+  facts separately instead.
+- Suggestions are professional opinion, not facts — never invent specific
+  numbers, amounts, budgets, currency figures (SAR/USD/etc.), percentages,
+  timelines, or staffing/headcount numbers that do not appear in the
+  Context. Keep suggestions qualitative unless a number is already present
+  in the Context.
 
 ### REVISION RULES:
 1. You will be given your PREVIOUS ANSWER and a REVIEWER CRITIQUE of it.
@@ -579,8 +658,17 @@ previous answer that failed an accuracy check.
    period than what the Question asked about), find and use the number from
    the CORRECT matching row/label in the Context instead — do not just drop
    the number or repeat the same mismatch.
-4. Keep the same output format: brief analysis, then a "#### Suggestions"
-   section with exactly 2 actionable, professional suggestions.
+4. Keep the same response structure as the original answer:
+   - If the Question is a pure extraction/factual question, keep it to just
+     the fact(s) — no "التحليل"/"Analysis" section, no "الاقتراحات"/
+     "Suggestions" section.
+   - If the Question asks for analysis/explanation/recommendations, keep
+     the three labeled parts (الحقائق / التحليل / الاقتراحات, or
+     Facts/Analysis/Suggestions in English) and make sure every suggestion
+     is still immediately followed by its supporting evidence from the
+     Context ("الدليل:" / "Evidence:").
+   Do not add a Suggestions section that wasn't warranted by the Question,
+   and do not remove one that the Question does call for.
 5. Do not restate the critique itself to the user — just produce the
    corrected answer.
 5b. Never describe your own edit process (e.g. do not write things like
@@ -935,31 +1023,31 @@ class FinancialRAGAgent:
         self.chunks = chunks
         self._hybrid_retriever = HybridRetriever(vector_db, chunks) if chunks else None
 
-        
         api_key = os.getenv("GROQ_API_KEY")
         secret_key = SecretStr(api_key) if api_key else None
 
-    
+       
         self.llm = ChatGroq(
             model=self.MAIN_MODEL,
             api_key=secret_key,
             temperature=0,
             max_retries=1,
+            request_timeout=60,
         )
         self.fast_llm = ChatGroq(
             model=self.FAST_MODEL,
             api_key=secret_key,
             temperature=0,
             max_retries=1,
+            request_timeout=30,
         )
 
-     
         self._main_model_limiter = TPMRateLimiter(
             tpm_limit=int(os.getenv("GROQ_MAIN_MODEL_TPM_LIMIT", "8000")),
             safety_margin=0.9,
         )
 
-
+     
         self._fast_model_limiter = TPMRateLimiter(
             tpm_limit=int(os.getenv("GROQ_FAST_MODEL_TPM_LIMIT", "30000")),
             safety_margin=0.9,
@@ -1002,6 +1090,10 @@ class FinancialRAGAgent:
             for doc in relevant_docs
         ])
 
+ 
+        print(f"📄 Context المرسل للموديل ({len(context)} حرف من {len(relevant_docs)} مستند):")
+        print(f"   {context[:300]}{'...' if len(context) > 300 else ''}")
+
         def _source_label(doc) -> Optional[str]:
             page = doc.metadata.get('page')
             if page is not None:
@@ -1021,7 +1113,7 @@ class FinancialRAGAgent:
             chat_history = []
 
         # ========================================================================
-
+    
         # ========================================================================
         refine_engine = SelfRefiningAnswerEngine(
             self.llm,
