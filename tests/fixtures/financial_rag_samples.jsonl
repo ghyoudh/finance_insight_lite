@@ -1,3 +1,0 @@
-{"model":"candidate_a","question":"What was 2023 revenue?","source_chunks":["Revenue for 2023 was SAR 100 million."],"reference_answer":"Revenue for 2023 was SAR 100 million.","generated_answer":"2023 revenue was SAR 100 million."}
-{"model":"candidate_a","question":"What was the operating margin?","source_chunks":["Operating income was SAR 20 million on revenue of SAR 100 million."],"reference_answer":"Operating margin was 20%.","generated_answer":"The operating margin was 20%."}
-{"model":"candidate_b","question":"When did the company announce the dividend?","source_chunks":["The board announced a SAR 5 million dividend on 15 March 2024."],"reference_answer":"The dividend was announced on 15 March 2024.","generated_answer":"The dividend was announced on 15 March 2024."}

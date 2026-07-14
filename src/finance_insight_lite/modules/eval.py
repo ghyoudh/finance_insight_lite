@@ -180,6 +180,7 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
 
 
 def _write_results(rows: list[dict[str, Any]], path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
     if path.suffix.lower() == ".csv":
         fieldnames = sorted({key for row in rows for key in row})
         with path.open("w", newline="", encoding="utf-8") as handle:

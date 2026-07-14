@@ -348,7 +348,12 @@ LANGCHAIN_API_KEY=your_key_here
 
 ### Running Tests
 ```bash
-python -m pytest tests/
+python scripts/export_chat_history.py
+
+python -m finance_insight_lite.modules.eval \
+  --input tests/fixtures/chat_history_export.jsonl \
+  --output tests/output/judge_results.json \
+  --with-judge
 ```
 
 ### Building Distribution

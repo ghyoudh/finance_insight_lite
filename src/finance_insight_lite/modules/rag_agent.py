@@ -3,7 +3,7 @@ import re
 import time
 import threading
 from collections import deque
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Literal
 from langchain_groq import ChatGroq
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
@@ -16,10 +16,10 @@ import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
 import json
-from typing import List, Dict, Any, Literal
 
 from .query_expansion import QueryExpander
 from .hybrid_retriever import HybridRetriever
+from .workflow_coordinator import WorkflowCoordinator
 
 
 # ============================================================================
@@ -1055,6 +1055,9 @@ class FinancialRAGAgent:
             print(f"⏱️ {label}: {now - _t0:.2f}s")
             _t0 = now
 
+        if chat_history is None:
+            chat_history = []
+
         query_expander = QueryExpander(self.fast_llm) if self._hybrid_retriever else None
 
         retriever = CRAGRetriever(
@@ -1063,12 +1066,47 @@ class FinancialRAGAgent:
             hybrid_retriever=self._hybrid_retriever,
             query_expander=query_expander,
         )
-        relevant_results = retriever.get_relevant_documents(query)
+        coordinator = WorkflowCoordinator(
+            self.fast_llm,
+            retriever,
+            rate_limiter=self._fast_model_limiter,
+        )
+
+        evaluation = coordinator.evaluate(query, chat_history)
+        _lap(f"Coordinator evaluation (needs_retrieval={evaluation.needs_retrieval})")
+
+        if not evaluation.needs_retrieval:
+            direct_prompt = ChatPromptTemplate.from_messages([
+                ("system", "You are a helpful assistant for a financial document Q&A "
+                           "system. Respond briefly and naturally in the same language "
+                           "as the query. Do not invent any financial figures — if the "
+                           "query actually needs document data, say you'd need to check "
+                           "the documents."),
+                ("human", "Chat History: {chat_history}\n\nQuery: {query}")
+            ])
+            formatted_direct_prompt = direct_prompt.format_messages(
+                query=query,
+                chat_history=chat_history,
+            )
+            direct_prompt_text = " ".join(str(m.content) for m in formatted_direct_prompt)
+            self._fast_model_limiter.wait_if_needed(
+                TPMRateLimiter.estimate_tokens(direct_prompt_text),
+                label="Direct Answer",
+            )
+            response = self.fast_llm.invoke(formatted_direct_prompt)
+            return {
+                "answer": response.content.strip(),
+                "source_pages": [],
+                "confidence": "N/A",
+                "verification": None,
+                "relevant_docs_count": 0,
+                "chart": None
+            }
+
+        routed = coordinator.route(query)
         _lap("Retrieval TOTAL (expansion + hybrid search + CRAG grading)")
 
-        relevant_docs = [r["document"] for r in relevant_results]
-
-        if not relevant_docs:
+        if routed["instruction"].action == "REPORT_NOT_FOUND":
             return {
                 "answer": "No relevant documents found for your query.",
                 "source_pages": [],
@@ -1077,6 +1115,8 @@ class FinancialRAGAgent:
                 "relevant_docs_count": 0,
                 "chart": None
             }
+
+        relevant_docs = routed["documents"]
 
         context = "\n\n".join([
             f"[Page {doc.metadata.get('page')}]\n{doc.page_content}"
@@ -1101,9 +1141,6 @@ class FinancialRAGAgent:
             for label in (_source_label(doc) for doc in relevant_docs)
             if label is not None
         })
-
-        if chat_history is None:
-            chat_history = []
 
         # ========================================================================
         # ========================================================================

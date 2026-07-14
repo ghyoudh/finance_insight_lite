@@ -54,13 +54,51 @@ st.markdown("""
     .stTextInput > div > div > input {
         font-size: 1.1rem;
     }
-    .answer-box {
-        background-color: #789575;
-        padding: 1.5rem;
-        border-radius: 10px;
-        border-left: 5px solid #0D3908;
-        color: #E1E1E1;
-        font-size: 1.1rem;
+    /* Streamlit adds the supplied container key as a CSS class. */
+    div[class*="st-key-answer-"] {
+        background: #789575;
+        padding: 1.4rem 1.5rem;
+        border: 1px solid #d6e5d4;
+        border-left: 5px solid #2e5d28;
+        border-radius: 14px;
+        box-shadow: 0 8px 24px rgba(32, 67, 29, 0.08);
+        color: #193217;
+        font-size: 1.05rem;
+        line-height: 1.7;
+        overflow-wrap: anywhere;
+    }
+    div[class*="st-key-answer-"] .answer-box__label {
+        display: flex;
+        align-items: center;
+        gap: 0.45rem;
+        margin-bottom: 0.75rem;
+        color: #2e5d28;
+        font-size: 0.78rem;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+    }
+    div[class*="st-key-answer-"] p:first-child {
+        margin-top: 0;
+    }
+    div[class*="st-key-answer-"] p:last-child {
+        margin-bottom: 0;
+    }
+    div[class*="st-key-answer-"] ul, div[class*="st-key-answer-"] ol {
+        padding-left: 1.35rem;
+    }
+    div[class*="st-key-answer-"] code {
+        background: #e2eee0;
+        border-radius: 4px;
+        padding: 0.1rem 0.3rem;
+        color: #1e4a19;
+    }
+    div[class*="st-key-answer-"] pre {
+        background: #193217;
+        border-radius: 8px;
+        color: #f4faf3;
+        padding: 0.9rem;
+        overflow-x: auto;
     }
     .source-box {
         background-color: #465844;
@@ -318,8 +356,15 @@ for i, chat in enumerate(st.session_state.chat_history):
         st.write(chat.get('question'))
 
     with st.chat_message("assistant", avatar="./images/chatbots_icon.png"):
-        answer = chat.get('answer')
-        st.markdown(f'<div class="answer-box">{answer}</div>', unsafe_allow_html=True)
+        answer = chat.get('answer') or "I couldn't generate an answer for this question."
+        # A keyed container gives the response a stable CSS hook while preserving
+        # Markdown formatting without treating model output as HTML.
+        with st.container(key=f"answer-{i}"):
+            st.markdown(
+                '<div class="answer-box__label">✦ Financial insight</div>',
+                unsafe_allow_html=True,
+            )
+            st.markdown(answer)
 
         # Display chart if available
         if chat.get('chart'):
