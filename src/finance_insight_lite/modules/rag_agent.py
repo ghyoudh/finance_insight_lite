@@ -867,10 +867,27 @@ class FinancialDataExtractor:
         k_max = k if k is not None else self.adaptive_depth.compute_k_max(self.vector_db)
         print(f"📊 نافذة الاسترجاع لاستخراج بيانات الرسم البياني (k_max): {k_max}")
 
-        docs = self.vector_db.similarity_search(query, k=k_max)
+        improvement_query = self._is_improvement_percentage_query(query)
+        retrieval_query = "نسبة التحسّن البُعد المقاس" if improvement_query else query
+        retrieval_k = k_max
+        if improvement_query:
+            corpus_size = self.adaptive_depth.estimate_corpus_size(self.vector_db)
+            if corpus_size:
+                # A comparison chart needs every occurrence of this structured
+                # field, not just the nearest semantic matches.
+                retrieval_k = min(corpus_size, 100)
+        docs = self.vector_db.similarity_search(retrieval_query, k=retrieval_k)
 
         if not docs:
             return pd.DataFrame()
+
+        # Percentage-improvement rows already have a stable structure in the
+        # processed documents. Parse them directly so the chart cannot mix
+        # percentages with ratings, raw differences, or unrelated metrics.
+        if improvement_query:
+            improvement_data = self._extract_improvement_percentages(docs)
+            if improvement_data:
+                return pd.DataFrame(improvement_data)
 
         combined_text = "\n\n".join([
             f"[Page {doc.metadata.get('page')} | Sheet: {doc.metadata.get('sheet_name', 'N/A')}]\n{doc.page_content}"
@@ -884,7 +901,9 @@ class FinancialDataExtractor:
             2. Each object MUST have: "label", "value", "currency", "suggestion".
             3. "value" must be a CLEAN number. 
             4. If no new/relevant data found, return empty list [].
-            5. STRICT: NO markdown, ONLY JSON array."""),
+            5. Every returned row must represent the SAME metric and unit; never mix
+               percentages, ratings, differences, and monetary amounts in one result.
+            6. STRICT: NO markdown, ONLY JSON array."""),
             ("human", "Query: {query}\n\nContext:\n{combined_text}\n\nJSON:")
         ])
 
@@ -932,6 +951,57 @@ class FinancialDataExtractor:
         print("📌 Falling back to regex extraction...")
         return pd.DataFrame(columns=['label', 'value', 'currency', 'suggestion'])
 
+    @staticmethod
+    def _normalize_arabic(text: str) -> str:
+        diacritics = re.compile(r"[\u0610-\u061A\u064B-\u065F\u0670\u06D6-\u06ED]")
+        return diacritics.sub("", text).replace("ـ", "")
+
+    @classmethod
+    def _is_improvement_percentage_query(cls, query: str) -> bool:
+        normalized = cls._normalize_arabic(query.lower())
+        return any(phrase in normalized for phrase in [
+            "نسبة التحسن",
+            "نسب التحسن",
+            "معدل التحسن",
+            "improvement rate",
+            "improvement percentage",
+        ])
+
+    @staticmethod
+    def _extract_improvement_percentages(docs: List[Any]) -> List[Dict[str, Any]]:
+        label_pattern = re.compile(
+            r"(?:البُعد\s+المقاس|measured\s+dimension|dimension)\s*:\s*([^|\n]+)",
+            re.IGNORECASE,
+        )
+        value_pattern = re.compile(
+            r"(?:نسبة\s+التحس[\u064B-\u065F]*ن|improvement\s+(?:rate|percentage))"
+            r"\s*:\s*\+?(-?[\d,]+(?:\.\d+)?)\s*%",
+            re.IGNORECASE,
+        )
+        rows = []
+        seen_labels = set()
+
+        for doc in docs:
+            text = doc.page_content
+            label_match = label_pattern.search(text)
+            value_match = value_pattern.search(text)
+            if not label_match or not value_match:
+                continue
+
+            label = label_match.group(1).strip()
+            if label in seen_labels:
+                continue
+
+            seen_labels.add(label)
+            rows.append({
+                "label": label,
+                "value": float(value_match.group(1).replace(",", "")),
+                "currency": "%",
+                "suggestion": "",
+            })
+
+        return rows
+
 class ChartGenerator:
     """Generate Plotly charts with financial styling"""
 
@@ -944,9 +1014,15 @@ class ChartGenerator:
                       template="plotly_white", color_discrete_sequence=ChartGenerator.COLORS)
         fig.update_layout(
             hovermode='x unified', height=500,
-            title_font_size=20, axis_title_font_size=14,
-            xaxis_title=x.replace('_', ' ').title(),
-            yaxis_title=y.replace('_', ' ').title()
+            title_font_size=20,
+            xaxis_title={
+                "text": x.replace('_', ' ').title(),
+                "font": {"size": 14},
+            },
+            yaxis_title={
+                "text": y.replace('_', ' ').title(),
+                "font": {"size": 14},
+            },
         )
         return fig
 
@@ -1005,7 +1081,11 @@ class ChartGenerator:
 
 class FinancialRAGAgent:
 
-    VIZ_KEYWORDS = ["chart", "visualiz", "plot", "graph", "draw", "pie", "bar", "line", "trend"]
+    VIZ_KEYWORDS = [
+        "chart", "visualiz", "plot", "graph", "draw", "pie", "bar", "line", "trend",
+        "رسم بياني", "مخطط", "تمثيل بياني", "تصوير بياني", "تصور بياني",
+        "رسم دائري", "رسم خطي", "رسم بالأعمدة", "رسم اعمدة", "رسم مبعثر",
+    ]
 
     FAST_MODEL = os.getenv("GROQ_FAST_MODEL", "llama-3.1-8b-instant")
     MAIN_MODEL = os.getenv("GROQ_MAIN_MODEL", "openai/gpt-oss-20b")
@@ -1152,7 +1232,7 @@ class FinancialRAGAgent:
             verifier_rate_limiter=self._fast_model_limiter,  # منفصل تماماً لـ fast_llm
         )
 
-        needs_chart = any(kw in query.lower() for kw in self.VIZ_KEYWORDS)
+        needs_chart = self._needs_chart(query)
 
         with ThreadPoolExecutor(max_workers=2) as executor:
             answer_future = executor.submit(
@@ -1220,6 +1300,14 @@ class FinancialRAGAgent:
             else:
                 fig = ChartGenerator.create_area_chart(df, x="label", y="value", title=query)
 
+            if "currency" in df.columns and set(df["currency"].dropna()) == {"%"}:
+                fig.update_yaxes(title_text="النسبة (%)")
+                fig.update_traces(
+                    texttemplate="%{y:g}%",
+                    textposition="auto",
+                    hovertemplate="%{x}<br>%{y:g}%<extra></extra>",
+                )
+
             return {
                 "success": True,
                 "chart": fig.to_json(),
@@ -1233,12 +1321,38 @@ class FinancialRAGAgent:
     def _suggest_chart_type(self, query: str, df: pd.DataFrame) -> str:
         query_lower = query.lower()
 
-        if any(kw in query_lower for kw in ["trend", "over time", "quarterly", "yearly", "monthly"]):
+        if FinancialDataExtractor._is_improvement_percentage_query(query):
+            return "bar"
+
+        # Honour an explicitly requested chart type before applying heuristics.
+        if any(kw in query_lower for kw in ["scatter", "مبعثر", "انتشار"]):
+            return "scatter"
+        if any(kw in query_lower for kw in ["area chart", "area graph", "مساحي", "مساحة"]):
+            return "area"
+        if any(kw in query_lower for kw in ["pie", "دائري", "دائرة"]):
+            return "pie"
+        if any(kw in query_lower for kw in ["line", "خطي"]):
             return "line"
-        if any(kw in query_lower for kw in ["compare", "comparison", "breakdown", "share", "distribution"]):
+        if any(kw in query_lower for kw in ["bar", "أعمدة", "اعمدة", "عمودي"]):
+            return "bar"
+
+        if any(kw in query_lower for kw in [
+            "trend", "over time", "quarterly", "yearly", "monthly",
+            "اتجاه", "عبر الزمن", "ربع سنوي", "ربعي", "سنوي", "شهري", "تطور",
+        ]):
+            return "line"
+        if any(kw in query_lower for kw in [
+            "compare", "comparison", "breakdown", "share", "distribution",
+            "مقارنة", "توزيع", "تفصيل", "حصة",
+        ]):
             return "pie" if len(df) <= 6 else "bar"
 
         return "bar"
+
+    @classmethod
+    def _needs_chart(cls, query: str) -> bool:
+        query_lower = query.lower()
+        return any(keyword in query_lower for keyword in cls.VIZ_KEYWORDS)
 
     def _clean_dataframe(self, data: list) -> pd.DataFrame:
         cleaned = []
