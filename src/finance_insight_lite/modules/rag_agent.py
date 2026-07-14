@@ -634,11 +634,17 @@ of guessing.]
 
 الاقتراحات:
 [Only include this part if the question actually asks for advice,
-recommendations, or next steps. Each suggestion must be immediately
-followed by the specific evidence from the Context it is based on, in this
-form:
-- التوصية: [qualitative, actionable suggestion — no invented numbers]
-  الدليل: [the specific fact/number from the Context that motivates it]
+recommendations, or next steps. Give AT MOST one or two suggestions total —
+pick the single most impactful one (or two, only if both are clearly
+distinct and important); never list more even if the Context could support
+several.
+Write each suggestion as ONE flowing sentence, not as separate
+"التوصية:"/"الدليل:" bullet lines. Let the evidence lead into the
+recommendation, using a connector like "بناءً على..." / "based on..."
+(e.g. "بناءً على ارتفاع استخدام نقاط القوة بنسبة 80%، يُقترح التركيز على..."
+/ "Based on the 80% rise in strengths usage, it may be worth focusing
+on..."). Do not use dashes, colons, or labeled sub-fields for this — plain
+prose only.
 Keep suggestions qualitative/directional (e.g. "consider increasing
 investment in coaching quality" — not "invest 15,000 SAR in coaching"),
 unless the Context itself already contains the number you're citing.]
@@ -702,9 +708,10 @@ previous answer that failed an accuracy check.
      "Suggestions" section.
    - If the Question asks for analysis/explanation/recommendations, keep
      the three labeled parts (الحقائق / التحليل / الاقتراحات, or
-     Facts/Analysis/Suggestions in English) and make sure every suggestion
-     is still immediately followed by its supporting evidence from the
-     Context ("الدليل:" / "Evidence:").
+     Facts/Analysis/Suggestions in English). Keep الاقتراحات to at most one
+     or two suggestions, each written as a single flowing sentence that
+     weaves in its supporting evidence using "بناءً على..." / "based on..."
+     — not separate "التوصية:"/"الدليل:" labels.
    Do not add a Suggestions section that wasn't warranted by the Question,
    and do not remove one that the Question does call for.
 5. Do not restate the critique itself to the user — just produce the
