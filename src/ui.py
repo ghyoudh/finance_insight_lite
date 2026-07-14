@@ -150,12 +150,15 @@ with st.sidebar:
     with col2:
         st.markdown('<p class="main-header" style="font-size:25px; font-weight:bold;">Finance Insight Lite</p>', unsafe_allow_html=True)
 
-    # Upload PDF or Excel
+    # Upload PDF, Excel, or Image
     st.subheader("📄 Document Upload")
     uploaded_files = st.file_uploader(
-        "Upload PDF or Excel",
-        type=['pdf', 'xlsx', 'xls'],
-        help="Upload a financial report in PDF or Excel format.",
+        "Upload PDF, Excel, or Image",
+        # NEW: أضفنا امتدادات الصور عشان يقدر المستخدم يرفع صورة جدول/رسم
+        # بياني مباشرة (بالإضافة للصور المضمّنة تلقائياً جوّا PDF/Excel،
+        # اللي تُستخرج وتُعالج بدون ما يحتاج المستخدم يرفعها لحالها).
+        type=['pdf', 'xlsx', 'xls', 'png', 'jpg', 'jpeg'],
+        help="Upload a financial report in PDF, Excel, or Image format.",
         accept_multiple_files=True
     )
 
@@ -455,4 +458,4 @@ if user_question:
     }
     st.session_state.chat_history.append(chat_entry)
     chat_db.save_entry(session_id, chat_entry)
-    st.rerun() 
+    st.rerun()
