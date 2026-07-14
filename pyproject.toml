@@ -19,7 +19,7 @@ dependencies = [
     # Document Processing
     "pymupdf>=1.26.0",
     "pandas>=2.3.0",
-    "openpyxl>=3.10.0",
+    "openpyxl>=3.1.5",
     
     # Text Processing & Embeddings
     "sentence-transformers>=5.2.0",
@@ -35,7 +35,9 @@ dependencies = [
     
     # API & Server
     "fastapi>=0.104.0",
-    "uvicorn[standard]>=0.24.0",
+    # Do not install uvicorn's optional `standard` extras here. They pull in
+    # uvloop, whose macOS event loop crashes Streamlit before the app starts.
+    "uvicorn>=0.24.0",
     
     # Configuration & Environment
     "python-dotenv>=1.2.0",

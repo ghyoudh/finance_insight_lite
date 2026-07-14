@@ -301,7 +301,7 @@ def _extract_page_range(args):
         document.close()
 
 
-def pdf_to_documents_parallel(pdf_path, max_workers=4, extract_images=True):
+def pdf_to_documents_parallel(pdf_path, max_workers=1, extract_images=True):
     """
     Load a PDF using process-based extraction for large documents.
 
@@ -357,7 +357,7 @@ def get_file_hash(file_path):
     return hash_md5.hexdigest()
 
 
-def pdf_to_documents_cached(pdf_path, cache_dir="data/cache", max_workers=4):
+def pdf_to_documents_cached(pdf_path, cache_dir="data/cache", max_workers=1):
     """
     Load PDF with caching - instant load for previously processed files
     
@@ -609,7 +609,7 @@ def excel_to_documents_optimized(excel_path, sheet_name=None, chunk_size=1500, e
 # MAIN FUNCTIONS - Choose based on your needs
 # ============================================================================
 
-def load_documents_fastest(file_path, use_cache=True, max_workers=4, **kwargs):
+def load_documents_fastest(file_path, use_cache=True, max_workers=1, **kwargs):
     """
     FASTEST document loader with all optimizations
     

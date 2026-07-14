@@ -205,7 +205,11 @@ with st.sidebar:
                         result = load_documents_fastest(
                             file_path,
                             use_cache=True,  # Enable caching
-                            max_workers=2  # Reduced workers for lighter processing
+                            # Streamlit runs scripts in a managed process. On macOS,
+                            # spawning a multiprocessing Pool from that process can
+                            # crash the interpreter and leave resource-tracker
+                            # semaphores behind. Keep PDF extraction in-process here.
+                            max_workers=1,
                         )
 
 

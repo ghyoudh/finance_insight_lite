@@ -10,6 +10,7 @@ from langchain_community.vectorstores import FAISS
 CHUNK_SIZE = 1500
 CHUNK_OVERLAP = 100
 EMBEDDING_MODEL = "all-MiniLM-L6-v2"
+EMBEDDING_DEVICE = "cpu"
 
 
 def _hash_file(file_path):
@@ -40,6 +41,7 @@ def _cache_key(documents, source_paths):
         "chunk_size": CHUNK_SIZE,
         "chunk_overlap": CHUNK_OVERLAP,
         "embedding_model": EMBEDDING_MODEL,
+        "embedding_device": EMBEDDING_DEVICE,
     }
     return hashlib.md5(json.dumps(configuration, sort_keys=True).encode("utf-8")).hexdigest()
 
@@ -47,7 +49,10 @@ def _cache_key(documents, source_paths):
 @lru_cache(maxsize=1)
 def get_embedding_model():
     """Create the embedding model once per Python process."""
-    return HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL)
+    return HuggingFaceEmbeddings(
+        model_name=EMBEDDING_MODEL,
+        model_kwargs={"device": EMBEDDING_DEVICE},
+    )
 
 
 def _load_or_create_chunks(documents, chunks_file):
