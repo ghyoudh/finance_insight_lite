@@ -54,19 +54,7 @@ class BatchGradeResponse(BaseModel):
 # ============================================================================
 
 class AdaptiveRetrievalDepth:
-    """
-    يحسب حجم نافذة الاسترجاع (k) بشكل ديناميكي بناءً على:
-      - حجم قاعدة البيانات (corpus size)
-      - توزيع درجات التشابه (similarity score distribution) للسؤال الحالي
 
-    ملاحظة: هذا الكلاس عام وقابل لإعادة الاستخدام بإعدادات مختلفة حسب
-    الاستهلاك. مثلاً:
-      - الاسترجاع النصي (CRAGRetriever) يحتاج دقة أعلى -> corpus_divisor أكبر
-        (نافذة أضيق) + k_upper_bound أقل.
-      - استخراج بيانات الرسوم البيانية (FinancialDataExtractor) يحتاج تغطية
-        أوسع (عشان يلقط كل فئات البيانات) -> corpus_divisor أصغر (نافذة أوسع)
-        + k_upper_bound أعلى.
-    """
 
     def __init__(
         self,
@@ -142,19 +130,7 @@ class AdaptiveRetrievalDepth:
 # ============================================================================
 
 class TPMRateLimiter:
-    """
-    Limiter توكنز-بالدقيقة تقريبي (thread-safe)، مخصص لموديل واحد بعينه —
-    الهدف يحاكي نافذة Groq المتدحرجة (rolling 60s TPM window) بشكل تقريبي
-    عشان نستبق السقف بانتظار محسوب، بدل الاصطدام بـ 429 أو queueing خفي من
-    طرف Groq يوصل 15-25 ثانية بدون أي تحكم.
 
-    ملاحظة مهمة: هذا لا يزيد الحصة المتاحة فعلياً — فقط يحوّل "انتظار
-    عشوائي غير متوقع + طلبات فاشلة تهدر توكنز" إلى "انتظار واحد محسوب،
-    بأقل قدر ممكن". إذا كان الاستهلاك الفعلي يقترب باستمرار من السقف
-    (كما يظهر بالـ logs: ~4800-4900 من أصل 8000 حتى قبل ما يبدأ السؤال
-    الحالي)، سيبقى هناك بعض الانتظار غالباً — هذا سقف حقيقي من مزوّد
-    الخدمة، لا يوجد حل كودي يزيله كلياً بدون ترقية الخطة.
-    """
 
     def __init__(self, tpm_limit: int, safety_margin: float = 0.9, window_seconds: float = 60.0):
         self.tpm_limit = tpm_limit
@@ -165,9 +141,7 @@ class TPMRateLimiter:
 
     @staticmethod
     def estimate_tokens(text: str) -> int:
-        # تقدير خشن (~3 حروف/توكن، يشمل هامش أمان للنصوص العربية اللي
-        # تستهلك توكنز أكثر من الإنجليزية لكل حرف) — كافٍ لأغراض
-        # الـ pacing فقط، مو المطلوب دقة حسابية فعلية.
+     
         return max(1, len(text) // 3)
 
     def _prune(self, now: float):
@@ -425,11 +399,6 @@ class VerificationResult(BaseModel):
 
 class SelfRAGVerifier:
 
-    # PERF/RATE-LIMIT FIX: كانت النصوص الكاملة لأول 5 مصادر تُرسل بدون أي
-    # حد أقصى — هذا يستهلك رموز (tokens) كثيرة بدون داعٍ حقيقي، ويزيد فرصة
-    # الاصطدام بسقف الـ TPM (تمت ملاحظته فعلياً بالـ logs: rate_limit_exceeded
-    # على openai/gpt-oss-20b). التحقق من رقم واحد لا يحتاج المستند كامل،
-    # فقط سياق كافٍ حوله — نفس منطق GRADING_SNIPPET_CHARS بالضبط.
     VERIFICATION_SNIPPET_CHARS = 800
     MAX_SOURCES_FOR_VERIFICATION = 3
 
@@ -534,21 +503,6 @@ Grade this answer now via the schema.""")
 class SelfRefiningAnswerEngine:
 
     # ========================================================================
-    # PERF FIX (chat log 2026-07-13): الـ Verification كانت تشتغل على نفس
-    # الموديل الرئيسي الثقيل (llm) المستخدم للتوليد — يعني كل سؤال يسحب
-    # 4 استدعاءات من ميزانية الـ TPM حق موديل واحد (8000 TPM على
-    # openai/gpt-oss-20b): Generation + Verification(x2) + Refinement.
-    # هذا كان يوصّل الاستهلاك التراكمي خلال دقيقة وحدة لقريب من السقف،
-    # فيضطر TPMRateLimiter ينتظر ~55 ثانية قبل استدعاء verification الأخير
-    # (شوهد فعلياً بالـ logs: "مستخدم تقريباً 6119/8000").
-    #
-    # الحل: التحقق (verify_answer) مهمة تصنيف/مطابقة محددة عبر schema
-    # (مقارنة رقم في الإجابة بمصدره النصي) — لا تحتاج نفس قوة الموديل
-    # المستخدم للتوليد الحر. تشغيلها على verifier_llm (افتراضياً fast_llm
-    # من الطبقة الأعلى) يفصلها كلياً عن ميزانية TPM حق الموديل الرئيسي،
-    # فيبقى على الموديل الثقيل استدعاء أو اثنين بس (Generation +
-    # Refinement) بدل 4 — بدون أي تغيير على منطق التحقق نفسه أو الـ schema،
-    # فالدقة ما تتأثر.
     # ========================================================================
 
     def __init__(self, llm, verifier_llm=None, max_refinement_attempts: int = 1,
@@ -556,13 +510,6 @@ class SelfRefiningAnswerEngine:
                  verifier_rate_limiter: Optional["TPMRateLimiter"] = None):
         self.llm = llm
         self.rate_limiter = rate_limiter
-        # BUG FIX (chat log): كان verifier يستخدم نفس rate_limiter حق
-        # الموديل الرئيسي حتى بعد ما نقلناه لـ fast_llm — يعني استدعاءات
-        # fast_llm كانت تنتظر (لغلط) على ميزانية TPM حق الموديل الثقيل
-        # (سقف 8000)، رغم إن fast_llm عنده ميزانية منفصلة تماماً عند
-        # Groq. هذا كان سبب الانتظارات 40-55 ثانية اللي استمرت رغم نقل
-        # Verification لموديل أسرع. الحين نستقبل verifier_rate_limiter
-        # منفصل (أو None لو ما نبي حماية عليه أصلاً).
         self.verifier = SelfRAGVerifier(verifier_llm or llm, rate_limiter=verifier_rate_limiter)
         self.max_refinement_attempts = max_refinement_attempts
         self.pass_threshold = pass_threshold
@@ -1068,27 +1015,11 @@ class FinancialRAGAgent:
         self.chunks = chunks
         self._hybrid_retriever = HybridRetriever(vector_db, chunks) if chunks else None
 
-        # PERF FIX: كانت هذه الـ clients تُنشأ من جديد داخل كل نداء لـ
-        # process_query (وحتى نسخة ثالثة داخل _build_chart) — يعني كل سؤال
-        # يدفع تكلفة تهيئة/اتصال إضافية بدون أي داعٍ، لأن نفس الـ agent
-        # instance يُعاد استخدامه لعدة أسئلة. الآن تُنشأ مرة واحدة فقط هنا
-        # ويُعاد استخدامها لكل الأسئلة القادمة على نفس الـ instance.
+
         api_key = os.getenv("GROQ_API_KEY")
         secret_key = SecretStr(api_key) if api_key else None
 
-        # PERF/RATE-LIMIT FIX: max_retries الافتراضي بمكتبة langchain_groq
-        # يعيد المحاولة تلقائياً بـ backoff تصاعدي عند 429 (rate limit) أو
-        # فشل تحقق الـ schema — وهذا الانتظار يصير "خفي" (جوّا .invoke())
-        # ولا يظهر بأي مكان قبل ما نلقط الاستثناء بأنفسنا. لاحظنا فعلياً
-        # جولات وصلت 14-24 ثانية بسبب هذا. تحديده صراحة بمحاولة واحدة إضافية
-        # فقط يحدد أقصى وقت ضائع، وبقية الحالات تنزل على الـ fallback
-        # الموجود أصلاً بـ except (rating=5, passed=False) بدل انتظار طويل.
-        # FIX (chat log): بدون timeout صريح، لو تعلّق اتصال الشبكة (Groq
-        # بطيء/ما يرد)، الـ worker thread ينتظر بلا حد زمني أقصى. وبما إن
-        # ThreadPoolExecutor.__exit__ يستدعي shutdown(wait=True)، البرنامج
-        # يعلّق على "Stopping..." عند Ctrl+C لين ينتهي هذا الاستدعاء —
-        # وممكن ما ينتهي أبداً. تحديد timeout يضمن أقصى مدة انتظار معقولة
-        # (60 ثانية) بدل تعليق لا نهائي، فيرمي استثناء عادي بدل ما يعلّق.
+
         self.llm = ChatGroq(
             model=self.MAIN_MODEL,
             api_key=secret_key,
@@ -1104,21 +1035,12 @@ class FinancialRAGAgent:
             request_timeout=30,
         )
 
-        # RATE-LIMIT FIX: الـ TPM limit ملاحظ فعلياً من رسائل خطأ Groq
-        # (Limit 8000 على openai/gpt-oss-20b تحديداً). قابل للتعديل عبر
-        # env var لو تغيّرت الخطة أو الموديل مستقبلاً.
+  
         self._main_model_limiter = TPMRateLimiter(
             tpm_limit=int(os.getenv("GROQ_MAIN_MODEL_TPM_LIMIT", "8000")),
             safety_margin=0.9,
         )
 
-        # BUG FIX (chat log): limiter منفصل تماماً لـ fast_llm — عنده
-        # ميزانية TPM مستقلة عند Groq عن الموديل الرئيسي (هذا هو أصل
-        # فكرة نقل Verification/Grading/Expansion له). سقف موديلات
-        # llama-3.1-8b-instant عادة أعلى بكثير من موديلات 20B+ عند Groq؛
-        # القيمة الافتراضية هنا محافظة (تقدير آمن)، عدّلها عبر env var
-        # حسب سقفك الفعلي بالخطة (تجده برسالة خطأ 429 لو صار، أو بلوحة
-        # تحكم Groq).
         self._fast_model_limiter = TPMRateLimiter(
             tpm_limit=int(os.getenv("GROQ_FAST_MODEL_TPM_LIMIT", "30000")),
             safety_margin=0.9,
@@ -1161,11 +1083,7 @@ class FinancialRAGAgent:
             for doc in relevant_docs
         ])
 
-        # DEBUG (chat log): طباعة معاينة الـ context اللي فعلياً بيوصل
-        # للموديل — يساعد نفرّق بسرعة بين مشكلة Retrieval (المعلومة مو
-        # موجودة بالـ context أصلاً) ومشكلة Generation/Reasoning (المعلومة
-        # موجودة والموديل ما استخدمها صح). شيليها أو حوّلها لـ logging.debug
-        # لو صار الكونسول مزدحم بعد التشخيص.
+      
         print(f"📄 Context المرسل للموديل ({len(context)} حرف من {len(relevant_docs)} مستند):")
         print(f"   {context[:300]}{'...' if len(context) > 300 else ''}")
 
@@ -1188,17 +1106,6 @@ class FinancialRAGAgent:
             chat_history = []
 
         # ========================================================================
-        # PERF FIX (chat log 2026-07-13): verifier_llm=self.fast_llm ينقل
-        # Verification لموديل سريع منفصل عن ميزانية TPM حق الموديل الرئيسي
-        # (راجع الشرح المفصّل بأعلى SelfRefiningAnswerEngine). النتيجة:
-        # الموديل الثقيل ينفذ استدعاء أو اثنين فقط (Generation + Refinement
-        # عند اللزوم) بدل 4، فيبتعد كثير عن سقف الـ 8000 TPM.
-        #
-        # rate_limiter=self._main_model_limiter: أعيد تفعيله كخط دفاع
-        # احتياطي (مو كحل أساسي بعد الحين) — لو صار سؤال بمستندات كبيرة
-        # جداً ما زالت الميزانية تقترب من السقف، ينتظر انتظار محسوب بدل ما
-        # يصطدم بـ 429 ويدخل بـ retry/backoff مخفي داخل .invoke() (اللي كان
-        # يسبب جولات 14-24 ثانية بدون أي ظهور بالـ logs).
         # ========================================================================
         refine_engine = SelfRefiningAnswerEngine(
             self.llm,
