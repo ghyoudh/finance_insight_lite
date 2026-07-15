@@ -1,3 +1,9 @@
+"""
+Finance Insight Lite — Streamlit UI (v3)
+────────────────────────────────────────
+Navy-themed, bilingual (AR/EN), glow-on-hover, welcome→dashboard flow.
+"""
+
 import shutil
 import streamlit as st
 import os
@@ -10,501 +16,272 @@ import json
 import pandas as pd
 import chat_db
 
-# Ensure Streamlit imports this checkout, not an older installed package.
 current_dir = str(Path(__file__).resolve().parent)
 if current_dir in sys.path:
     sys.path.remove(current_dir)
 sys.path.insert(0, current_dir)
 
-from finance_insight_lite.modules.processor import (
-    clear_cache,
-    load_documents_fastest,
-    pdf_to_documents,
-)
+from finance_insight_lite.modules.processor import clear_cache, load_documents_fastest, pdf_to_documents
 from finance_insight_lite.modules.verctor_store import build_vector_db
 from finance_insight_lite.modules.rag_agent import FinancialRAGAgent
 
-# Load environment variables
+from i18n import t, bind as i18n_bind, get_lang, set_lang
+from styles import get_css
+
 project_root = Path(__file__).parent.parent
-env_path = project_root / '.env'
-load_dotenv(dotenv_path=env_path)
+load_dotenv(dotenv_path=project_root / ".env")
 
-# Page config
-st.set_page_config(
-    page_title="Finance Insight Lite",
-    page_icon="./images/logo.png",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+st.set_page_config(page_title="Finance Insight Lite", page_icon="./images/logo.png", layout="wide", initial_sidebar_state="collapsed")
 
-# --- Persistent chat history: init DB + resolve this browser tab's session id ---
+_defaults = {
+    "agent": None, "chat_history": None, "vector_db": None, "chunks": None,
+    "pending_question": None, "processed_files": set(), "num_files": 0, "num_docs": 0,
+    "proc_time": 0.0, "default_chart_type": "bar", "show_data_table": True, "lang": "en",
+}
+for k, v in _defaults.items():
+    if k not in st.session_state:
+        st.session_state[k] = v
+
 chat_db.init_db()
 session_id = chat_db.get_or_create_session_id(st)
+if st.session_state.chat_history is None:
+    st.session_state.chat_history = chat_db.load_history(session_id)
 
-# Custom CSS
-st.markdown("""
-<style>
-    .main-header {
-        font-size: 100px;
-        font-weight: bold;
-        color: #2E5D28;
-        padding-bottom: 2rem;
-        padding-top: 1.7rem;
-    }
-    .stTextInput > div > div > input {
-        font-size: 1.1rem;
-    }
-    /* Streamlit adds the supplied container key as a CSS class. */
-    div[class*="st-key-answer-"] {
-        background: #789575;
-        padding: 1.4rem 1.5rem;
-        border: 1px solid #d6e5d4;
-        border-left: 5px solid #2e5d28;
-        border-radius: 14px;
-        box-shadow: 0 8px 24px rgba(32, 67, 29, 0.08);
-        color: #193217;
-        font-size: 1.05rem;
-        line-height: 1.7;
-        overflow-wrap: anywhere;
-    }
-    div[class*="st-key-answer-"] .answer-box__label {
+i18n_bind(st)
+lang = get_lang(st)
+st.html(get_css(lang))
+
+def _toggle_lang():
+    new = "ar" if st.session_state.lang == "en" else "en"
+    set_lang(st, new)
+
+st.html('<span class="lang-btn-anchor"></span>')
+st.button(t("lang_btn"), key="lang_toggle_btn", on_click=_toggle_lang)
+
+def build_llm_chat_history(chat_history, max_turns: int = 6):
+    recent = chat_history[-max_turns:] if max_turns else chat_history
+    return [{"question": turn.get("question", ""), "answer": turn.get("answer", "")} for turn in recent]
+
+def process_uploaded_files(uploaded_files):
+    if os.path.exists("./data/uploaded/"): shutil.rmtree("./data/uploaded")
+    os.makedirs("./data/uploaded")
+    paths = []
+    for f in uploaded_files:
+        p = f"./data/uploaded/{f.name}"
+        with open(p, "wb") as fh: fh.write(f.getbuffer())
+        paths.append(p)
+    start = time.time()
+    all_docs = []
+    progress = st.progress(0)
+    for idx, fp in enumerate(paths):
+        progress.progress((idx + 1) / len(paths))
+        result = load_documents_fastest(fp, use_cache=True, max_workers=1)
+        all_docs.extend(result["documents"])
+    progress.empty()
+    with st.spinner(t("building_db")):
+        st.session_state.vector_db, st.session_state.chunks = build_vector_db(all_docs, db_path="./database", source_paths=paths)
+    with st.spinner(t("initializing_agent")):
+        st.session_state.agent = FinancialRAGAgent(st.session_state.vector_db, chunks=st.session_state.chunks)
+    st.session_state.num_files = len(paths)
+    st.session_state.num_docs = len(all_docs)
+    st.session_state.proc_time = time.time() - start
+    st.session_state.processed_files = {f.name for f in uploaded_files}
+
+def reset_to_welcome():
+    st.session_state.agent = None; st.session_state.vector_db = None; st.session_state.chunks = None
+    st.session_state.processed_files = set(); st.session_state.num_files = 0; st.session_state.num_docs = 0
+    st.session_state.proc_time = 0.0; st.session_state.pending_question = None; st.session_state.chat_history = []
+    chat_db.clear_session(session_id)
+
+def clear_chat_only():
+    st.session_state.chat_history = []; chat_db.clear_session(session_id)
+
+def render_chat_turn(chat, idx):
+    answer = chat.get("answer", "")
+    st.markdown(answer)
+    chart_data = chat.get("chart")
+    if chart_data and chart_data.get("success"):
+        chart_json = chart_data.get("chart")
+        if chart_json:
+            try:
+                fig = go.Figure(json.loads(chart_json))
+                fig.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(15,29,50,0.6)", font_color="#E2E8F0", title_font_color="#60A5FA", legend_font_color="#94A3B8", margin=dict(l=20, r=20, t=40, b=20))
+                st.plotly_chart(fig, use_container_width=True, key=f"chart_{idx}")
+            except Exception as e: st.error(t("chart_error", error=str(e)))
+        if st.session_state.get("show_data_table", True) and chart_data.get("data_preview"):
+            with st.expander(t("view_data_table")): st.dataframe(pd.DataFrame(chart_data.get("data_preview")), use_container_width=True)
+    elif chart_data and chart_data.get("error"):
+        st.info(t("chart_unavailable", error=chart_data["error"]))
+
+    source_pages = chat.get("source_pages", [])
+    pages_val = ', '.join(source_pages) if source_pages else "N/A"
+    confidence_val = chat.get('confidence') or 'N/A'
+    docs_val = chat.get('relevant_docs_count') or 0
+
+    confidence_class = {
+        "high": "meta-badge--high", "medium": "meta-badge--medium", "low": "meta-badge--low",
+    }.get(str(confidence_val).lower(), "meta-badge--default")
+
+    chart_badge = f'<div class="meta-badge">{t("chart_included")}</div>' if chart_data else ""
+
+    st.html(f"""
+    <div class="meta-row">
+        <div class="meta-badge">
+            <span class="meta-label">{t('pages_label')}</span>
+            <span class="meta-value">{pages_val}</span>
+        </div>
+        <div class="meta-badge {confidence_class}">
+            <span class="meta-label">{t('confidence_label')}</span>
+            <span class="meta-value">{confidence_val}</span>
+        </div>
+        <div class="meta-badge">
+            <span class="meta-label">{t('docs_label')}</span>
+            <span class="meta-value">{docs_val}</span>
+        </div>
+        {chart_badge}
+    </div>
+    <style>
+    .meta-row {{
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 10px;
+    }}
+    .meta-badge {{
         display: flex;
         align-items: center;
-        gap: 0.45rem;
-        margin-bottom: 0.75rem;
-        color: #2e5d28;
-        font-size: 0.78rem;
-        font-weight: 700;
-        letter-spacing: 0.08em;
-        text-transform: uppercase;
+        gap: 6px;
+        background: rgba(15, 29, 50, 0.55);
+        border: 1px solid rgba(96, 165, 250, 0.25);
+        border-radius: 999px;
+        padding: 4px 12px;
+        font-size: 12.5px;
+        line-height: 1.4;
+    }}
+    .meta-label {{
+        color: #94A3B8;
+        font-weight: 500;
+    }}
+    .meta-value {{
+        color: #E2E8F0;
+        font-weight: 600;
+    }}
+    .meta-badge--high .meta-value {{ color: #4ADE80; }}
+    .meta-badge--medium .meta-value {{ color: #FBBF24; }}
+    .meta-badge--low .meta-value {{ color: #F87171; }}
+    </style>
+    """)
+
+    if chat.get("verification"):
+        with st.expander(t("view_verification")):
+            st.write(chat["verification"].get("notes", "No verification notes available."))
+
+def handle_question(question: str):
+    if st.session_state.agent is None: return st.warning(t("upload_first_warning"))
+    with st.spinner(t("thinking")):
+        result = st.session_state.agent.process_query(question, chat_history=build_llm_chat_history(st.session_state.chat_history))
+    entry = {
+        "question": question, "answer": result.get("answer"), "chart": result.get("chart"),
+        "source_pages": result.get("source_pages"), "confidence": result.get("confidence"),
+        "relevant_docs_count": result.get("relevant_docs_count"), "verification": result.get("verification"),
     }
-    div[class*="st-key-answer-"] p:first-child {
-        margin-top: 0;
-    }
-    div[class*="st-key-answer-"] p:last-child {
-        margin-bottom: 0;
-    }
-    div[class*="st-key-answer-"] ul, div[class*="st-key-answer-"] ol {
-        padding-left: 1.35rem;
-    }
-    div[class*="st-key-answer-"] code {
-        background: #e2eee0;
-        border-radius: 4px;
-        padding: 0.1rem 0.3rem;
-        color: #1e4a19;
-    }
-    div[class*="st-key-answer-"] pre {
-        background: #193217;
-        border-radius: 8px;
-        color: #f4faf3;
-        padding: 0.9rem;
-        overflow-x: auto;
-    }
-    .source-box {
-        background-color: #465844;
-        padding: 1rem;
-        border-radius: 5px;
-        margin-top: 1rem;
-    }
-
-    /* Target the button containers */
-    div.stButton > button {
-        background-color: #1e1e1e; /* Dark background */
-        color: #e0e0e0;            /* Light text */
-        border-radius: 50px;       /* Makes it a pill */
-        border: 1px solid #333;    /* Subtle border */
-        padding: 10px 25px;
-        transition: all 0.3s ease;
-        width: 100%;
-    }
-
-    /* Hover effect */
-    div.stButton > button:hover {
-        background-color: #333;
-        border-color: #555;
-        color: white;
-    }
-
-    /* Active/Focus state */
-    div.stButton > button:active, div.stButton > button:focus {
-        background-color: #444;
-        color: white;
-        border-color: #777;
-    }
-</style>
-""", unsafe_allow_html=True)
-
-# Initialize session state
-if 'agent' not in st.session_state:
-    st.session_state.agent = None
-if 'chat_history' not in st.session_state:
-    # كانت تبدأ فاضية دايماً؛ الحين نحمّل أي سجل سابق لنفس الجلسة
-    # من القاعدة، عشان الـ refresh ما يمسح المحادثة
-    st.session_state.chat_history = chat_db.load_history(session_id)
-if 'vector_db' not in st.session_state:
-    st.session_state.vector_db = None
-if 'pending_question' not in st.session_state:
-    st.session_state.pending_question = None
-
-
-# ============================================================================
-# PERF FIX: trim chat history before handing it to the LLM pipeline
-# ============================================================================
-def build_llm_chat_history(chat_history, max_turns: int = 6):
-    """
-    st.session_state.chat_history stores the FULL chat_entry dict per turn —
-    including 'source_chunks' (the entire text of every retrieved document
-    chunk for that turn) and 'chart' (a full Plotly figure JSON blob, which
-    can be large). That whole growing list was being passed straight into
-    FinancialRAGAgent.process_query(chat_history=...), which threads it
-    into the answer-generation prompt as-is.
-
-    Effect: every single question re-sent the full chunks + chart JSON of
-    every PREVIOUS question in the conversation, on top of its own new
-    context. The prompt therefore grows roughly linearly with how long the
-    conversation has been going — which directly explains responses that
-    get progressively slower (and can eventually blow past the model's
-    context window) the longer a chat session runs, even though nothing
-    changed in the backend logic itself.
-
-    The LLM only needs the conversational Q/A text to resolve follow-ups
-    like "why?" or "and for last quarter?" — not the raw chunks/chart data
-    (those live in `context`, freshly retrieved for the *current* question
-    every time). So: keep only question/answer pairs, and only the most
-    recent `max_turns` of them.
-    """
-    recent = chat_history[-max_turns:] if max_turns else chat_history
-    return [
-        {"question": turn.get("question", ""), "answer": turn.get("answer", "")}
-        for turn in recent
-    ]
-
-
-# Sidebar
-with st.sidebar:
-    col1, col2 = st.columns([2.5, 4]) # Adjust ratios for width
-    with col1:
-        st.image("./images/logo.png", width='stretch')
-    with col2:
-        st.markdown('<p class="main-header" style="font-size:25px; font-weight:bold;">Finance Insight Lite</p>', unsafe_allow_html=True)
-
-    # Upload PDF, Excel, or Image
-    st.subheader("📄 Document Upload")
-    uploaded_files = st.file_uploader(
-        "Upload PDF, Excel, or Image",
-        # NEW: أضفنا امتدادات الصور عشان يقدر المستخدم يرفع صورة جدول/رسم
-        # بياني مباشرة (بالإضافة للصور المضمّنة تلقائياً جوّا PDF/Excel،
-        # اللي تُستخرج وتُعالج بدون ما يحتاج المستخدم يرفعها لحالها).
-        type=['pdf', 'xlsx', 'xls', 'png', 'jpg', 'jpeg'],
-        help="Upload a financial report in PDF, Excel, or Image format.",
-        accept_multiple_files=True
-    )
-
-    if uploaded_files:
-        # Clear and recreate upload directory
-        if os.path.exists("./data/uploaded/"):
-            shutil.rmtree("./data/uploaded")
-        os.makedirs("./data/uploaded")
-
-        # Save all uploaded files
-        uploaded_file_paths = []
-        for uploaded_file in uploaded_files:
-            file_path = f"./data/uploaded/{uploaded_file.name}"
-
-            with open(file_path, "wb") as f:
-                f.write(uploaded_file.getbuffer())
-
-            uploaded_file_paths.append(file_path)
-
-        st.success(f"✅ Uploaded {len(uploaded_file_paths)} file(s) successfully!")
-
-        # Process Document Button
-        process_btn = st.button("🚀 Process All Documents", width='stretch')
-
-        if process_btn:
-            with st.spinner("Processing files..."):
-                start_time = time.time()
-
-                all_documents = []
-                file_types = []
-
-                # Progress bar
-                progress_bar = st.progress(0)
-                status_text = st.empty()
-
-                try:
-                    for idx, file_path in enumerate(uploaded_file_paths):
-                        # Update progress
-                        progress = (idx + 1) / len(uploaded_file_paths)
-                        progress_bar.progress(progress)
-                        status_text.text(f"Processing {idx + 1}/{len(uploaded_file_paths)}: {os.path.basename(file_path)}")
-
-                        # Load documents
-                        result = load_documents_fastest(
-                            file_path,
-                            use_cache=True,  # Enable caching
-                            # Streamlit runs scripts in a managed process. On macOS,
-                            # spawning a multiprocessing Pool from that process can
-                            # crash the interpreter and leave resource-tracker
-                            # semaphores behind. Keep PDF extraction in-process here.
-                            max_workers=1,
-                        )
-
-
-                        all_documents.extend(result['documents'])
-                        file_types.append(result['file_type'])
-
-                    # Clear progress indicators
-                    progress_bar.empty()
-                    status_text.empty()
-
-                    # Build vector database
-                
-                    with st.spinner("Building vector database..."):
-                         st.session_state.vector_db, st.session_state.chunks = build_vector_db(
-                            all_documents,
-                            db_path="./database",
-                              source_paths=uploaded_file_paths,
-                        )
-
-                    # Create agent with toggle for Self-RAG
-                    with st.spinner("Initializing agent..."):
-                        st.session_state.agent = FinancialRAGAgent(
-                        st.session_state.vector_db,
-                          chunks=st.session_state.chunks,
-                             )
-
-                    processing_time = time.time() - start_time
-
-                    st.success(f"Processed {len(uploaded_file_paths)} files ({len(all_documents)} documents) in {processing_time:.2f}s!")
-
-                except Exception as e:
-                    st.error(f"Error: {str(e)}")
-
-    st.divider()
-    # Settings
-    with st.expander("⚙️ Settings"):
-        # RAG Configuration
-        st.subheader("RAG Configuration")
-        use_self_rag = st.toggle("Enable Self-RAG", value=True, help="Higher accuracy but slower")
-
-        # RAG parameters
-        relevance_threshold = st.slider(
-            "Relevance Threshold",
-            min_value=0.0,
-            max_value=1.0,
-            value=0.6,
-            step=0.1,
-            help="Higher = stricter filtering"
-        )
-
-        # Number of documents to retrieve
-        num_docs = st.slider(
-            "Number of Documents",
-            min_value=3,
-            max_value=10,
-            value=3,  # Reduced default value for faster processing
-            help="More docs = better coverage"
-        )
-
-        default_chart = st.selectbox(
-            "Default Chart Type",
-            ["bar", "line", "pie", "scatter", "area"],
-            help="Default chart type for visualizations"
-        )
-        st.session_state.default_chart_type = default_chart
-        
-        show_data_table = st.checkbox(
-            "Show Data Table",
-            value=True,
-            help="Display data table below charts"
-        )
-        st.session_state.show_data_table = show_data_table
-
-        # clear cache button and size display
-        cache_path = Path("data/cache")
-        col1, col2 = st.columns([3, 1])
-        with col1:
-            if st.button("Clear Cache", width='stretch'):
-                clear_cache()
-                st.success("✅ Cleared!")
-                st.rerun()
-        with col2:
-            if cache_path.exists():
-                cache_size = sum(f.stat().st_size for f in cache_path.glob("*.pkl")) / (1024 * 1024)
-                st.caption(f"{cache_size:.1f} MB cached")
-
-    # Clear history
-    if st.button("🗑️ Clear Chat History"):
-        st.session_state.chat_history = []
-        chat_db.clear_session(session_id)
-        st.rerun()
-
-    st.divider()
-    st.markdown(
-        """
-        <div style="text-align: center; margin-top: 2rem; color: #888;">
-            <p>Finance Insight Lite © 2026. All rights reserved.</p>
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
-
-# Display chat history
-for i, chat in enumerate(st.session_state.chat_history):
-    with st.chat_message("user", avatar="./images/user_icon.png"):
-        st.write(chat.get('question'))
-
-    with st.chat_message("assistant", avatar="./images/chatbots_icon.png"):
-        answer = chat.get('answer') or "I couldn't generate an answer for this question."
-        # A keyed container gives the response a stable CSS hook while preserving
-        # Markdown formatting without treating model output as HTML.
-        with st.container(key=f"answer-{i}"):
-            st.markdown(
-                '<div class="answer-box__label">✦ Financial insight</div>',
-                unsafe_allow_html=True,
-            )
-            st.markdown(answer)
-
-        # Display chart if available
-        if chat.get('chart'):
-            chart_data = chat['chart']
-            
-            if chart_data.get('success'):
-                st.markdown('<div class="chart-container">', unsafe_allow_html=True)
-                
-                # Display chart
-                chart_json = chart_data.get('chart')
-                if chart_json:
-                    try:
-                        fig = go.Figure(json.loads(chart_json))
-                        st.plotly_chart(fig, width='stretch', key=f"chart_{i}")
-                        print(f"✅ Chart: {chart_data.get('title', 'Visualization')}")
-                    except Exception as e:
-                        st.error(f"⚠️ Error rendering chart: {e}")
-                else:
-                    st.warning("⚠️ No chart data available")
-                
-                # Display data table if enabled
-                if st.session_state.get('show_data_table', True):
-                    data_preview = chart_data.get('data_preview')
-                    if data_preview:
-                        with st.expander("📊 View Data Table"):
-                            try:
-                                df = pd.DataFrame(data_preview)
-                                st.dataframe(df, width='stretch')
-                            except Exception as e:
-                                st.error(f"⚠️ Error displaying table: {e}")
-                
-                st.markdown('</div>', unsafe_allow_html=True)
-            elif chart_data.get('error'):
-                st.info(f"📊 Chart unavailable: {chart_data.get('error')}")
-
-        # Display metadata
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            source_pages = chat.get('source_pages', [])
-            if source_pages:
-                st.caption(f"📄 Pages: {', '.join(source_pages)}")
-            else:
-                st.caption("📄 Pages: N/A")  # Fallback if no pages are available
-        with col2:
-            st.caption(f"🎯 Confidence: {chat['confidence'] if chat.get('confidence') else 'N/A'}")
-        with col3:
-            st.caption(f"📊 Docs: {chat['relevant_docs_count'] if chat.get('relevant_docs_count') else 0}")
-        with col4:
-            if chat.get('chart'):
-                st.caption("📈 Visualization included")
-
-        # Verification result
-        if chat.get('verification'):
-            with st.expander("🔍 View Verification"):
-                verification_result = chat['verification'].get('notes', "No verification notes available.")
-                st.write(verification_result)
-
-# Input area
-user_question = st.chat_input("Type your question here...")
-
-if len(st.session_state.chat_history) == 0:
-    # Main area
-    st.title('Hi there! 👋 Welcome to **Finance Insight Lite**. Upload a financial report to get started.')
-
-    # Chat interface
-    st.subheader("💬 Ask Questions")
-
-    # Sample questions
-    sample_questions = [
-        "What is the net income?",
-        "What is the free cash flow?",
-        "What is the gearing ratio?",
-        "How much was the dividend declared?",
-        "Draw a pie chart of expense breakdown",
-        "Visualize the profit margins"
-    ]
-
-    # Function to set pending question
-    def set_pending_question(q):
-        st.session_state.pending_question = q
-
-    cols = st.columns(2)
-    for i, q in enumerate(sample_questions):
-        with cols[i % 2]:
-            st.button(q, key=f"sample_{i}", on_click=set_pending_question, args=(q,))
-
-# Process pending question from sample buttons
-if st.session_state.pending_question:
-    question = st.session_state.pending_question
-    st.session_state.pending_question = None
-
-    if st.session_state.agent is None:
-        st.warning("⚠️ Please upload and process a PDF document first!")
-    else:
-        # Process the question
-        with st.spinner("🤔 Thinking..."):
-            result = st.session_state.agent.process_query(
-                question,
-                chat_history=build_llm_chat_history(st.session_state.chat_history),
-            )
-
-        # Save to history
-        chat_entry = {
-            'question': question,
-            'answer': result.get('answer'),
-            'source_pages': result.get('source_pages'),
-            'confidence': result.get('confidence'),
-            'verification': result.get('verification'),
-            'relevant_docs_count': result.get('relevant_docs_count'),
-            'source_chunks': result.get('source_texts'),
-            'chart': result.get('chart')  # Use chart from result
-        }
-        st.session_state.chat_history.append(chat_entry)
-        chat_db.save_entry(session_id, chat_entry)
-        st.rerun()
-
-# Process regular chat input
-if user_question:
-    if st.session_state.agent is None:
-        st.warning("⚠️ Please upload and process a PDF document first!")
-        st.stop()
-
-    # Process query
-    with st.spinner("🤔 Thinking..."):
-        result = st.session_state.agent.process_query(
-            user_question,
-            chat_history=build_llm_chat_history(st.session_state.chat_history),
-        )
-
-    # Save to history
-    chat_entry = {
-        'question': user_question,
-        'answer': result.get('answer'),
-        'source_pages': result.get('source_pages'),
-        'confidence': result.get('confidence'),
-        'verification': result.get('verification'),
-        'relevant_docs_count': result.get('relevant_docs_count'),
-        'source_chunks': result.get('source_texts'),
-        'chart': result.get('chart')  # Use chart from result
-    }
-    st.session_state.chat_history.append(chat_entry)
-    chat_db.save_entry(session_id, chat_entry)
+    st.session_state.chat_history.append(entry)
+    chat_db.save_entry(session_id, entry)
     st.rerun()
+
+_ICON_SEARCH_URI = "data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22%2360A5FA%22%20stroke-width%3D%221.8%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Ccircle%20cx%3D%2211%22%20cy%3D%2211%22%20r%3D%227.5%22/%3E%3Cpath%20d%3D%22M20.5%2020.5%2016.4%2016.4%22/%3E%3Cpath%20d%3D%22M8%2011h6%22/%3E%3Cpath%20d%3D%22M11%208v6%22/%3E%3C/svg%3E"
+_ICON_CHART_URI = "data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22%2360A5FA%22%20stroke-width%3D%221.8%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Cpath%20d%3D%22M3.5%203.5v17h17%22/%3E%3Crect%20x%3D%227%22%20y%3D%2213%22%20width%3D%222.6%22%20height%3D%225.2%22%20rx%3D%220.4%22%20fill%3D%22%2360A5FA%22%20stroke%3D%22none%22/%3E%3Crect%20x%3D%2211.7%22%20y%3D%229%22%20width%3D%222.6%22%20height%3D%229.2%22%20rx%3D%220.4%22%20fill%3D%22%2360A5FA%22%20stroke%3D%22none%22/%3E%3Crect%20x%3D%2216.4%22%20y%3D%225.5%22%20width%3D%222.6%22%20height%3D%2212.7%22%20rx%3D%220.4%22%20fill%3D%22%2360A5FA%22%20stroke%3D%22none%22/%3E%3C/svg%3E"
+_ICON_CHAT_URI = "data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22%2360A5FA%22%20stroke-width%3D%221.8%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Cpath%20d%3D%22M4%205.5h16a1%201%200%200%201%201%201V16a1%201%200%200%201-1%201H9l-4.6%203.4a.6.6%200%200%201-.96-.48V17H4a1%201%200%200%201-1-1V6.5a1%201%200%200%201%201-1Z%22/%3E%3Cpath%20d%3D%22M8%2010h8%22/%3E%3Cpath%20d%3D%22M8%2013.2h5%22/%3E%3C/svg%3E"
+
+ICON_SEARCH = f'<img src="{_ICON_SEARCH_URI}" alt="" />'
+ICON_CHART = f'<img src="{_ICON_CHART_URI}" alt="" />'
+ICON_CHAT = f'<img src="{_ICON_CHAT_URI}" alt="" />'
+
+def show_welcome():
+    import base64
+    logo_path = Path("./images/logo.png")
+    logo_tag = f'<img class="welcome-logo" src="data:image/png;base64,{base64.b64encode(logo_path.read_bytes()).decode()}" />' if logo_path.exists() else ""
+
+    st.html(f"""
+    <div class="welcome-container">
+        <span class="logo-halo-wrap">{logo_tag}</span>
+        <div class="welcome-title">Finance Insight Lite</div>
+        <div class="welcome-subtitle">{t("welcome_title")}</div>
+        <div class="welcome-desc">{t("welcome_desc")}</div>
+    </div>
+    """)
+
+    spacer_l, mid, spacer_r = st.columns([1, 2, 1])
+    with mid:
+        cta_align = "right" if lang == "ar" else "left"
+        st.html(f'<div class="upload-cta-label" style="text-align: {cta_align};">{t("upload_cta")}</div>')
+        uploaded = st.file_uploader("Upload", type=["pdf", "xlsx", "xls", "png", "jpg", "jpeg"], accept_multiple_files=True, label_visibility="collapsed")
+
+    if uploaded:
+        new_names = {f.name for f in uploaded}
+        if new_names != st.session_state.processed_files:
+            with mid:
+                with st.spinner(t("processing")):
+                    try:
+                        process_uploaded_files(uploaded)
+                        st.success(t("process_success", files=st.session_state.num_files, docs=st.session_state.num_docs, time=st.session_state.proc_time))
+                    except Exception as e:
+                        st.error(t("process_error", error=str(e)))
+                        st.stop()
+            time.sleep(0.8)
+            st.rerun()
+
+    st.html(f"""
+    <div class="features-grid">
+        <div class="feature-card"><div class="feature-icon">{ICON_SEARCH}</div><div class="feature-title">{t("feature_1_title")}</div><div class="feature-desc">{t("feature_1_desc")}</div></div>
+        <div class="feature-card"><div class="feature-icon">{ICON_CHART}</div><div class="feature-title">{t("feature_2_title")}</div><div class="feature-desc">{t("feature_2_desc")}</div></div>
+        <div class="feature-card"><div class="feature-icon">{ICON_CHAT}</div><div class="feature-title">{t("feature_3_title")}</div><div class="feature-desc">{t("feature_3_desc")}</div></div>
+    </div>
+    """)
+
+def show_dashboard_header():
+    import base64
+    logo_path = Path("./images/logo.png")
+    logo_tag = f'<img src="data:image/png;base64,{base64.b64encode(logo_path.read_bytes()).decode()}" />' if logo_path.exists() else ""
+
+    st.html('<span class="back-btn-anchor"></span>')
+    if st.button("←", key="header_back", help=t("back_btn_help")): reset_to_welcome(); st.rerun()
+
+    st.html(f"""
+    <div class="dash-header-block">
+        <div class="dash-logo-row"><span class="logo-halo-wrap">{logo_tag}</span><div class="dash-title">Finance <span class="accent">Insight Lite</span></div></div>
+    </div>
+    """)
+
+    col_title, col_clear = st.columns([5, 1.4])
+    with col_clear:
+        with st.container(key="header_clear_chat_wrap"):
+            if st.button(t('clear_chat_btn'), help=t("clear_chat_help"), key="header_clear_chat"): clear_chat_only(); st.rerun()
+    st.divider()
+
+def show_dashboard():
+    show_dashboard_header()
+    for i, chat in enumerate(st.session_state.chat_history):
+        st.html('<span class="msg-user-anchor"></span>')
+        with st.chat_message("user", avatar="./images/user_icon.png"): st.write(chat.get("question"))
+        st.html('<span class="msg-bot-anchor"></span>')
+        with st.chat_message("assistant", avatar="./images/chatbots_icon.png"): render_chat_turn(chat, i)
+
+    if len(st.session_state.chat_history) == 0:
+        SVG_SPARKLE = "data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22%2360A5FA%22%20stroke-width%3D%222%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Cpolygon%20points%3D%2212%202%2015.09%208.26%2022%209.27%2017%2014.14%2018.18%2021.02%2012%2017.77%205.82%2021.02%207%2014.14%202%209.27%208.91%208.26%2012%202%22/%3E%3C/svg%3E"
+        st.html(f'<div class="ask-header"><img src="{SVG_SPARKLE}" width="20" height="20" /><p class="ask-title">{t("ask_questions_title")}</p></div><p class="ask-subtitle">{t("ask_questions_subtitle")}</p>')
+
+        samples = [t("sample_q_1"), t("sample_q_2"), t("sample_q_3"), t("sample_q_4"), t("sample_q_5"), t("sample_q_6")]
+        def _set_q(q): st.session_state.pending_question = q
+        cols = st.columns(3)
+        for i, q in enumerate(samples):
+            with cols[i % 3]:
+                st.button(f"⯈  {q}", key=f"sq_{i}", on_click=_set_q, args=(q,))
+
+    user_q = st.chat_input(t("chat_placeholder"))
+    if st.session_state.pending_question:
+        q = st.session_state.pending_question; st.session_state.pending_question = None; handle_question(q)
+    if user_q: handle_question(user_q)
+
+if st.session_state.agent is not None: show_dashboard()
+else: show_welcome()
