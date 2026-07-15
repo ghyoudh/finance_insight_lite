@@ -7,8 +7,11 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
 
+from .structured_tables import is_tabular_row_document, small_table_documents
+
 CHUNK_SIZE = 1500
 CHUNK_OVERLAP = 100
+CHUNKING_VERSION = 2
 EMBEDDING_MODEL = "all-MiniLM-L6-v2"
 EMBEDDING_DEVICE = "cpu"
 
@@ -40,6 +43,7 @@ def _cache_key(documents, source_paths):
         "sources": source_fingerprints,
         "chunk_size": CHUNK_SIZE,
         "chunk_overlap": CHUNK_OVERLAP,
+        "chunking_version": CHUNKING_VERSION,
         "embedding_model": EMBEDDING_MODEL,
         "embedding_device": EMBEDDING_DEVICE,
     }
@@ -66,11 +70,21 @@ def _load_or_create_chunks(documents, chunks_file):
         chunk_overlap=CHUNK_OVERLAP,
         length_function=len,
     )
-    chunks = text_splitter.split_documents(documents)
+    table_row_documents = [document for document in documents if is_tabular_row_document(document)]
+    other_documents = [document for document in documents if not is_tabular_row_document(document)]
+    chunks = list(table_row_documents)
+    if other_documents:
+        chunks.extend(text_splitter.split_documents(other_documents))
     with open(chunks_file, "wb") as cache_file:
         pickle.dump(chunks, cache_file)
     print(f"✓ Created and cached {len(chunks)} chunks from {len(documents)} pages")
     return chunks
+
+
+def _attach_structured_table_context(vector_db, source_paths):
+    vector_db._source_paths = list(source_paths or [])
+    vector_db._small_table_documents = small_table_documents(source_paths)
+    return vector_db
 
 
 def build_vector_db(documents, db_path="./database", source_paths=None, cache_dir="data/vector_cache"):
@@ -96,11 +110,13 @@ def build_vector_db(documents, db_path="./database", source_paths=None, cache_di
             chunks = _load_or_create_chunks(documents, cache_path / "chunks.pkl")
             with open(hybrid_chunks_file, "wb") as f:
                 pickle.dump(chunks, f)
+        _attach_structured_table_context(vector_db, source_paths)
         return vector_db, chunks
 
     print(f"Building vector DB from {len(documents)} documents")
     chunks = _load_or_create_chunks(documents, cache_path / "chunks.pkl")
     vector_db = FAISS.from_documents(documents=chunks, embedding=embeddings)
+    _attach_structured_table_context(vector_db, source_paths)
     vector_db.save_local(str(cache_path))
 
     with open(hybrid_chunks_file, "wb") as f:

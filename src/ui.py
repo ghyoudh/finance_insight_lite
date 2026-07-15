@@ -1,7 +1,6 @@
 """
-Finance Insight Lite — Streamlit UI (v3)
-────────────────────────────────────────
-Navy-themed, bilingual (AR/EN), glow-on-hover, welcome→dashboard flow.
+Finance Insight Lite - Streamlit UI (v3)
+"Ledger & Brass" theme, bilingual (AR/EN), welcome->dashboard flow.
 """
 
 import shutil
@@ -55,9 +54,6 @@ def _toggle_lang():
     new = "ar" if st.session_state.lang == "en" else "en"
     set_lang(st, new)
 
-st.html('<span class="lang-btn-anchor"></span>')
-st.button(t("lang_btn"), key="lang_toggle_btn", on_click=_toggle_lang)
-
 def build_llm_chat_history(chat_history, max_turns: int = 6):
     recent = chat_history[-max_turns:] if max_turns else chat_history
     return [{"question": turn.get("question", ""), "answer": turn.get("answer", "")} for turn in recent]
@@ -105,7 +101,7 @@ def render_chat_turn(chat, idx):
         if chart_json:
             try:
                 fig = go.Figure(json.loads(chart_json))
-                fig.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(15,29,50,0.6)", font_color="#E2E8F0", title_font_color="#60A5FA", legend_font_color="#94A3B8", margin=dict(l=20, r=20, t=40, b=20))
+                fig.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(15,29,50,0.6)", font_color="#E2E8F0", font_family="IBM Plex Mono, monospace", title_font_color="#60A5FA", legend_font_color="#94A3B8", margin=dict(l=20, r=20, t=40, b=20))
                 st.plotly_chart(fig, use_container_width=True, key=f"chart_{idx}")
             except Exception as e: st.error(t("chart_error", error=str(e)))
         if st.session_state.get("show_data_table", True) and chart_data.get("data_preview"):
@@ -151,24 +147,28 @@ def render_chat_turn(chat, idx):
         display: flex;
         align-items: center;
         gap: 6px;
-        background: rgba(15, 29, 50, 0.55);
-        border: 1px solid rgba(96, 165, 250, 0.25);
-        border-radius: 999px;
+        background: var(--ink-800, rgba(15,31,56,0.6));
+        border: 1px solid var(--card-border, rgba(30,48,80,0.8));
+        border-radius: 6px;
         padding: 4px 12px;
-        font-size: 12.5px;
+        font-family: var(--font-mono, monospace);
+        font-size: 12px;
         line-height: 1.4;
     }}
     .meta-label {{
-        color: #94A3B8;
+        color: var(--text-muted, #64748B);
         font-weight: 500;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        font-size: 10.5px;
     }}
     .meta-value {{
-        color: #E2E8F0;
+        color: var(--text-primary, #E2E8F0);
         font-weight: 600;
     }}
-    .meta-badge--high .meta-value {{ color: #4ADE80; }}
-    .meta-badge--medium .meta-value {{ color: #FBBF24; }}
-    .meta-badge--low .meta-value {{ color: #F87171; }}
+    .meta-badge--high .meta-value {{ color: var(--success, #22C55E); }}
+    .meta-badge--medium .meta-value {{ color: var(--warning, #F59E0B); }}
+    .meta-badge--low .meta-value {{ color: var(--error, #EF4444); }}
     </style>
     """)
 
@@ -202,61 +202,89 @@ def show_welcome():
     logo_path = Path("./images/logo.png")
     logo_tag = f'<img class="welcome-logo" src="data:image/png;base64,{base64.b64encode(logo_path.read_bytes()).decode()}" />' if logo_path.exists() else ""
 
+    with st.container(key="welcome_wrap"):
+        st.html(f"""
+        <div class="welcome-container">
+            <span class="logo-halo-wrap">{logo_tag}</span>
+            <div class="welcome-title">Finance Insight Lite</div>
+            <div class="welcome-subtitle">{t("welcome_title")}</div>
+            <div class="welcome-desc">{t("welcome_desc")}</div>
+        </div>
+        """)
+
+        spacer_l, mid, spacer_r = st.columns([1, 2, 1])
+        with mid:
+            cta_align = "right" if lang == "ar" else "left"
+            st.html(f'<div class="upload-cta-label" style="text-align: {cta_align};">{t("upload_cta")}</div>')
+            uploaded = st.file_uploader(t("upload_label"), type=["pdf", "xlsx", "xls", "csv", "png", "jpg", "jpeg"], accept_multiple_files=True, label_visibility="collapsed")
+
+        if uploaded:
+            new_names = {f.name for f in uploaded}
+            if new_names != st.session_state.processed_files:
+                with mid:
+                    with st.spinner(t("processing")):
+                        try:
+                            process_uploaded_files(uploaded)
+                            st.success(t("process_success", files=st.session_state.num_files, docs=st.session_state.num_docs, time=st.session_state.proc_time))
+                        except Exception as e:
+                            st.error(t("process_error", error=str(e)))
+                            st.stop()
+                time.sleep(0.8)
+                st.rerun()
+
+        st.html(f"""
+        <div class="features-grid">
+            <div class="feature-card"><div class="feature-icon">{ICON_SEARCH}</div><div class="feature-title">{t("feature_1_title")}</div><div class="feature-desc">{t("feature_1_desc")}</div></div>
+            <div class="feature-card"><div class="feature-icon">{ICON_CHART}</div><div class="feature-title">{t("feature_2_title")}</div><div class="feature-desc">{t("feature_2_desc")}</div></div>
+            <div class="feature-card"><div class="feature-icon">{ICON_CHAT}</div><div class="feature-title">{t("feature_3_title")}</div><div class="feature-desc">{t("feature_3_desc")}</div></div>
+        </div>
+        """)
+
+def show_menu_bar():
+    import base64
+    logo_path = Path("./images/logo.png")
+    logo_tag = f'<img class="menu-logo" src="data:image/png;base64,{base64.b64encode(logo_path.read_bytes()).decode()}" />' if logo_path.exists() else ""
+
+    st.html('<span class="menu-bar-anchor"></span>')
+    col_brand, col_actions = st.columns([3, 2])
+    with col_brand:
+        st.html(f'<div class="menu-brand">{logo_tag}<span class="menu-wordmark">Finance Insight Lite</span></div>')
+    with col_actions:
+        with st.container(key="menu_actions"):
+            in_dashboard = st.session_state.agent is not None
+            if in_dashboard:
+                if st.button(t("clear_chat_btn"), help=t("clear_chat_help"), key="menu_clear_chat"):
+                    clear_chat_only(); st.rerun()
+                if st.button(t("back_btn"), help=t("back_btn_help"), key="menu_back"):
+                    reset_to_welcome(); st.rerun()
+            st.button(t("lang_btn"), key="menu_lang_toggle", on_click=_toggle_lang)
+
+def show_footer():
+    import base64
+    logo_path = Path("./images/logo.png")
+    logo_tag = f'<img class="footer-logo" src="data:image/png;base64,{base64.b64encode(logo_path.read_bytes()).decode()}" />' if logo_path.exists() else ""
+
     st.html(f"""
-    <div class="welcome-container">
-        <span class="logo-halo-wrap">{logo_tag}</span>
-        <div class="welcome-title">Finance Insight Lite</div>
-        <div class="welcome-subtitle">{t("welcome_title")}</div>
-        <div class="welcome-desc">{t("welcome_desc")}</div>
-    </div>
-    """)
-
-    spacer_l, mid, spacer_r = st.columns([1, 2, 1])
-    with mid:
-        cta_align = "right" if lang == "ar" else "left"
-        st.html(f'<div class="upload-cta-label" style="text-align: {cta_align};">{t("upload_cta")}</div>')
-        uploaded = st.file_uploader("Upload", type=["pdf", "xlsx", "xls", "png", "jpg", "jpeg"], accept_multiple_files=True, label_visibility="collapsed")
-
-    if uploaded:
-        new_names = {f.name for f in uploaded}
-        if new_names != st.session_state.processed_files:
-            with mid:
-                with st.spinner(t("processing")):
-                    try:
-                        process_uploaded_files(uploaded)
-                        st.success(t("process_success", files=st.session_state.num_files, docs=st.session_state.num_docs, time=st.session_state.proc_time))
-                    except Exception as e:
-                        st.error(t("process_error", error=str(e)))
-                        st.stop()
-            time.sleep(0.8)
-            st.rerun()
-
-    st.html(f"""
-    <div class="features-grid">
-        <div class="feature-card"><div class="feature-icon">{ICON_SEARCH}</div><div class="feature-title">{t("feature_1_title")}</div><div class="feature-desc">{t("feature_1_desc")}</div></div>
-        <div class="feature-card"><div class="feature-icon">{ICON_CHART}</div><div class="feature-title">{t("feature_2_title")}</div><div class="feature-desc">{t("feature_2_desc")}</div></div>
-        <div class="feature-card"><div class="feature-icon">{ICON_CHAT}</div><div class="feature-title">{t("feature_3_title")}</div><div class="feature-desc">{t("feature_3_desc")}</div></div>
+    <div class="app-footer">
+        <div class="footer-main">
+            <div class="footer-identity">
+                {logo_tag}
+                <div class="footer-copy">
+                    <div class="footer-title">Finance Insight Lite</div>
+                    <div class="footer-summary">{t("footer_summary")}</div>
+                </div>
+            </div>
+        </div>
+        <div class="footer-legal">{t("footer")}</div>
     </div>
     """)
 
 def show_dashboard_header():
-    import base64
-    logo_path = Path("./images/logo.png")
-    logo_tag = f'<img src="data:image/png;base64,{base64.b64encode(logo_path.read_bytes()).decode()}" />' if logo_path.exists() else ""
-
-    st.html('<span class="back-btn-anchor"></span>')
-    if st.button("←", key="header_back", help=t("back_btn_help")): reset_to_welcome(); st.rerun()
-
-    st.html(f"""
+    st.html("""
     <div class="dash-header-block">
-        <div class="dash-logo-row"><span class="logo-halo-wrap">{logo_tag}</span><div class="dash-title">Finance <span class="accent">Insight Lite</span></div></div>
+        <div class="dash-title">Finance <span class="accent">Insight Lite</span></div>
     </div>
     """)
-
-    col_title, col_clear = st.columns([5, 1.4])
-    with col_clear:
-        with st.container(key="header_clear_chat_wrap"):
-            if st.button(t('clear_chat_btn'), help=t("clear_chat_help"), key="header_clear_chat"): clear_chat_only(); st.rerun()
     st.divider()
 
 def show_dashboard():
@@ -276,12 +304,18 @@ def show_dashboard():
         cols = st.columns(3)
         for i, q in enumerate(samples):
             with cols[i % 3]:
-                st.button(f"⯈  {q}", key=f"sq_{i}", on_click=_set_q, args=(q,))
+                st.button(f">  {q}", key=f"sq_{i}", on_click=_set_q, args=(q,))
 
     user_q = st.chat_input(t("chat_placeholder"))
+    st.html(f'<div class="chat-input-legal">{t("footer")}</div>')
     if st.session_state.pending_question:
         q = st.session_state.pending_question; st.session_state.pending_question = None; handle_question(q)
     if user_q: handle_question(user_q)
 
-if st.session_state.agent is not None: show_dashboard()
-else: show_welcome()
+show_menu_bar()
+
+if st.session_state.agent is not None:
+    show_dashboard()
+else:
+    show_welcome()
+    show_footer()

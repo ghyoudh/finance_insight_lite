@@ -12,7 +12,12 @@ class QueryEvaluation(BaseModel):
 
 
 class CoordinatorInstruction(BaseModel):
-    action: Literal["ANSWER_DIRECT", "ANSWER_FROM_CONTEXT", "REPORT_NOT_FOUND"]
+    action: Literal[
+        "ANSWER_DIRECT",
+        "ANSWER_FROM_CONTEXT",
+        "ANSWER_FROM_FULL_TABLE",
+        "REPORT_NOT_FOUND",
+    ]
     context_status: Literal["verified", "not_found", "n/a"]
     note: str = Field(default="", max_length=200)
 
@@ -69,7 +74,21 @@ worse than one unnecessary retrieval."""),
             return QueryEvaluation(needs_retrieval=True, reason="evaluation_failed_safe_default")
 
     def route(self, query: str, k: Optional[int] = None) -> Dict[str, Any]:
-        """Calls CRAG and converts its result into a structured instruction."""
+        """Choose full-table context when available, otherwise call CRAG."""
+        full_table_docs = []
+        if hasattr(self.crag_retriever, "get_full_table_documents"):
+            full_table_docs = self.crag_retriever.get_full_table_documents(query)
+
+        if full_table_docs:
+            return {
+                "instruction": CoordinatorInstruction(
+                    action="ANSWER_FROM_FULL_TABLE",
+                    context_status="verified",
+                    note=f"{len(full_table_docs)} small structured table(s) supplied in full.",
+                ),
+                "documents": full_table_docs,
+            }
+
         relevant_results = self.crag_retriever.get_relevant_documents(query, k=k)
         relevant_docs = [r["document"] for r in relevant_results]
 

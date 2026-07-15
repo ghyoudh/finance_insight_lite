@@ -297,6 +297,10 @@ TRANSLATIONS = {
         "en": "Finance Insight Lite 2026. All rights reserved.",
         "ar": "Finance Insight Lite 2026. جميع الحقوق محفوظة.",
     },
+    "footer_summary": {
+        "en": "AI-assisted document analysis for financial reports, tables, charts, and sourced Q&A.",
+        "ar": "تحليل مستندات مالي مدعوم بالذكاء الاصطناعي للتقارير والجداول والرسوم والإجابات الموثّقة.",
+    },
     "lang_btn": {
         "en": "العربية",
         "ar": "English",
@@ -305,18 +309,33 @@ TRANSLATIONS = {
 
 
 # ── Helpers ─────────────────────────────────────────────────────
-_current_lang = "en"
+_DEFAULT_LANG = "en"
+_SUPPORTED_LANGS = {"en", "ar"}
 
 
 def get_lang(st_module) -> str:
     """Return the current language from Streamlit session state."""
     if "lang" not in st_module.session_state:
-        st_module.session_state.lang = "en"
+        st_module.session_state.lang = _DEFAULT_LANG
     return st_module.session_state.lang
 
 
 def set_lang(st_module, lang: str):
+    if lang not in _SUPPORTED_LANGS:
+        lang = _DEFAULT_LANG
     st_module.session_state.lang = lang
+
+
+def _resolve_lang() -> str:
+    """Resolve the active Streamlit session language without module-level state."""
+    try:
+        import streamlit as st
+
+        lang = st.session_state.get("lang", _DEFAULT_LANG)
+    except Exception:
+        lang = _DEFAULT_LANG
+
+    return lang if lang in _SUPPORTED_LANGS else _DEFAULT_LANG
 
 
 def t(key: str, **kwargs) -> str:
@@ -324,7 +343,8 @@ def t(key: str, **kwargs) -> str:
     entry = TRANSLATIONS.get(key)
     if entry is None:
         return key
-    text = entry.get(_current_lang, entry.get("en", key))
+    lang = _resolve_lang()
+    text = entry.get(lang, entry.get(_DEFAULT_LANG, key))
     if kwargs:
         try:
             text = text.format(**kwargs)
@@ -334,6 +354,5 @@ def t(key: str, **kwargs) -> str:
 
 
 def bind(st_module):
-    """Call once at the top of ui.py so t() picks up the right language."""
-    global _current_lang
-    _current_lang = get_lang(st_module)
+    """Ensure the current Streamlit session has a language initialized."""
+    get_lang(st_module)

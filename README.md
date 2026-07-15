@@ -1,440 +1,263 @@
-# Finance Insight Lite 📊💰
+# Finance Insight Lite
 
-An intelligent financial document analysis system powered by **Retrieval-Augmented Generation (RAG)** and advanced language models. Instantly extract insights from financial reports, earnings statements, and Excel data with AI-driven Q&A and interactive visualizations.
+Finance Insight Lite is a local financial document analysis app. It lets you upload financial reports, spreadsheets, CSV files, and supported image files, then ask questions over the uploaded content using a Retrieval-Augmented Generation (RAG) pipeline powered by Groq and LangChain.
 
-## ✨ Key Features
+The main experience is a Streamlit chat interface with source references, confidence metadata, persistent chat history, and Plotly visualizations for finance-oriented questions.
 
-### 🚀 Lightning-Fast Document Processing
-- **Parallel PDF/Excel Processing**: Process multiple files simultaneously with ThreadPoolExecutor
-- **Smart Caching System**: Instant reload using file-hash based caching
-- **Optimized Chunking**: Intelligent document segmentation for better retrieval
-- **Multi-format Support**: PDF and Excel spreadsheets (.xlsx, .xls)
+## What It Does
 
-### 🤖 Advanced RAG Engine
-- **Corrective RAG (CRAG)**: Batch document grading for high-quality retrieval
-- **Self-RAG Verification**: Optional fact-checking and answer validation
-- **LLM-Assisted Data Extraction**: Intelligent extraction of financial metrics
-- **Semantic Vector Search**: Chroma + FAISS for semantic similarity matching
+- Answers questions about uploaded financial documents.
+- Retrieves relevant report pages, table rows, and extracted chunks before generating an answer.
+- Supports PDF, Excel, CSV, PNG, JPG, and JPEG uploads.
+- Builds a local vector database with Chroma/FAISS-style retrieval.
+- Uses hybrid retrieval, query expansion, corrective RAG grading, and optional answer verification.
+- Generates charts for questions that ask to visualize financial metrics.
+- Persists chat history in a local SQLite database.
+- Exposes both a Streamlit UI and a FastAPI service.
 
-### 📊 Interactive Data Visualization
-- **Multiple Chart Types**: Bar, Line, Pie, Scatter, and Area charts
-- **Auto Data Extraction**: LLM-powered extraction of numerical data from documents
-- **Fallback to Demo Data**: Demo data displays if no data found
-- **Data Table Export**: View extracted data in tabular format
+## Current Status
 
-### 💬 Modern Web Interface
-- **Streamlit UI**: Clean, responsive web interface
-- **Real-time Chat**: Conversation history with context awareness
-- **Source Attribution**: See exact page references for all answers
-- **Configuration Panel**: Fine-tune RAG parameters on-the-fly
+This is an active prototype for financial RAG workflows. It is designed for local experimentation, demos, and evaluation against financial reports such as Saudi Aramco filings. It is not a production financial advice system.
 
-### ⚙️ Customizable Settings
-- **Self-RAG Toggle**: Balance between accuracy and speed
-- **Relevance Threshold**: Control answer precision
-- **Document Count**: Adjust number of context documents
-- **Chart Type Selection**: Choose default visualization type
-- **Cache Management**: View and clear cache with one click
+## Requirements
 
-## 🎯 What It Can Do
+- Python 3.11 or newer
+- A Groq API key
+- macOS, Linux, or Windows
+- At least 4 GB RAM, with 8 GB or more recommended for larger reports
 
-### Financial Analysis
-- Extract key metrics (revenue, profit, cash flow, ratios)
-- Answer questions about financial performance
-- Provide trend analysis and comparisons
-- Calculate financial ratios and metrics
+The project includes both `requirements.txt` and `uv.lock`. Use whichever workflow fits your environment.
 
-### Document Intelligence
-- Semantic search across multiple documents
-- Multi-document cross-referencing
-- Context-aware question answering
-- Source page tracking
+## Setup
 
-### Data Visualization
-- Create charts from financial data
-- Visualize trends and patterns
-- Compare metrics side-by-side
-- Export data for further analysis
+Clone or open the repository, then create a virtual environment:
 
-## 🚀 Quick Start
-
-### Prerequisites
-- **Python**: 3.11 or higher
-- **Groq API Key**: Get free at https://console.groq.com
-- **RAM**: Minimum 4GB (8GB recommended)
-
-### 1. Clone Repository
 ```bash
-cd Finance_Insight_Lite
-```
-
-### 2. Create Virtual Environment
-```bash
-# Windows PowerShell
-python -m venv .venv
-.venv\Scripts\Activate.ps1
-
-# Linux/macOS
 python -m venv .venv
 source .venv/bin/activate
 ```
 
-### 3. Install Dependencies
+On Windows PowerShell:
+
+```powershell
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+```
+
+Install dependencies:
+
 ```bash
 pip install -r requirements.txt
 ```
 
-### 4. Configure Environment
-Create `.env` file in project root:
+Or, if you use `uv`:
+
+```bash
+uv sync
+```
+
+Create a `.env` file in the project root:
+
 ```env
 GROQ_API_KEY=your_groq_api_key_here
+
+# Optional LangSmith tracing
+LANGCHAIN_TRACING_V2=false
+LANGCHAIN_API_KEY=your_langchain_api_key_here
+```
+
+## Run the Streamlit App
+
+```bash
+streamlit run src/ui.py
+```
+
+Then open:
+
+```text
+http://localhost:8501
+```
+
+In the sidebar, upload one or more supported files and click **Process All Documents**. Once processing finishes, ask questions in the chat box.
+
+## Run the FastAPI Service
+
+```bash
+uvicorn main:app --host 127.0.0.1 --port 8000 --reload
+```
+
+Useful endpoints:
+
+- `GET /health` - check service status
+- `POST /upload` - upload and process one document
+- `POST /query` - ask a question against the loaded document
+- `GET /document/info` - inspect the currently loaded document
+- `DELETE /document` - clear the loaded document
+- `GET /docs` - OpenAPI documentation
+
+## Example Questions
+
+- What is the net income?
+- What is the free cash flow?
+- What is the gearing ratio?
+- How much was the dividend declared?
+- What are the key financial highlights?
+- Draw a bar chart of quarterly revenue.
+- Visualize profit margins.
+- Reconcile the ledger against the bank statement.
+
+## Supported Inputs
+
+| Type | Extensions | Notes |
+| --- | --- | --- |
+| PDF reports | `.pdf` | Text is extracted with PyMuPDF. Embedded images are inspected when OCR support is available. |
+| Excel workbooks | `.xlsx`, `.xls` | Sheets are converted into retrievable table documents. |
+| CSV files | `.csv` | Rows and small tables are preserved for structured-table retrieval. |
+| Images | `.png`, `.jpg`, `.jpeg` | Intended for screenshots of financial tables or report images. |
+
+Image and embedded-image extraction uses OCR-related libraries from the processing module when available. If image processing fails in your environment, use PDF, Excel, or CSV inputs first, then install the missing OCR dependencies shown in the error output.
+
+## Project Layout
+
+```text
+.
+|-- main.py                                # FastAPI application
+|-- src/
+|   |-- ui.py                              # Streamlit application
+|   |-- app.py                             # Combined API/UI launcher draft
+|   |-- chat_db.py                         # SQLite chat-history helpers
+|   `-- finance_insight_lite/
+|       `-- modules/
+|           |-- processor.py               # PDF, table, image, cache processing
+|           |-- verctor_store.py           # Vector database construction
+|           |-- rag_agent.py               # Main RAG orchestration
+|           |-- hybrid_retriever.py        # Semantic plus keyword retrieval
+|           |-- query_expansion.py         # Query expansion
+|           |-- structured_tables.py       # Table-aware document helpers
+|           |-- workflow_coordinator.py    # Task routing and workflow hints
+|           |-- groq_client.py             # Groq integration helpers
+|           `-- eval.py                    # Evaluation runner
+|-- data/
+|   |-- rew/                               # Example raw financial files
+|   |-- uploaded/                          # Files uploaded through the UI
+|   |-- processed/                         # Processed markdown/text outputs
+|   `-- vector_db/                         # Local vector index files
+|-- database/                              # Local app vector database
+|-- tests/                                 # Unit and evaluation tests
+|-- skills/                                # Role/workflow prompt assets
+|-- requirements.txt
+|-- pyproject.toml
+`-- uv.lock
+```
+
+## Core Pipeline
+
+1. **Document processing**
+   `processor.py` loads PDFs, spreadsheets, CSVs, and images into LangChain `Document` objects. It preserves useful metadata such as source file, page, row, and extraction type.
+
+2. **Structured-table handling**
+   `structured_tables.py` keeps small tables intact where possible, so ledger, budget, revenue operations, and reconciliation questions can use full table context.
+
+3. **Vector indexing**
+   `verctor_store.py` builds the local retrieval index used by the app. The filename currently keeps the existing project spelling.
+
+4. **Retrieval and grading**
+   `rag_agent.py` combines adaptive retrieval depth, hybrid retrieval, query expansion, and corrective RAG grading to select context for the answer.
+
+5. **Answer generation**
+   The agent calls Groq-hosted chat models through LangChain, generates a finance-oriented answer, and returns source pages, confidence, verification metadata, and optional chart data.
+
+6. **Visualization**
+   Chart requests are detected from the query. The app extracts tabular/numeric data and renders Plotly bar, line, pie, scatter, or area charts.
+
+## Configuration
+
+The main required environment variable is:
+
+```env
+GROQ_API_KEY=your_groq_api_key_here
+```
+
+Optional LangSmith tracing:
+
+```env
 LANGCHAIN_TRACING_V2=true
 LANGCHAIN_API_KEY=your_langchain_api_key_here
 ```
 
-### 5. Run Application
+The Streamlit sidebar also exposes runtime controls:
+
+- Self-RAG verification toggle
+- Relevance threshold
+- Number of retrieved documents
+- Default chart type
+- Data table display toggle
+- Cache clearing
+- Chat history clearing
+
+## Data and Persistence
+
+- Uploaded files are stored under `data/uploaded/`.
+- Local vector indexes are written under `database/` or `data/vector_db/`, depending on the entry point.
+- Chat history is stored in `src/chat_history.db`.
+- Cached processing artifacts may be stored under `data/cache/`.
+
+These local artifacts can grow over time. Clear them when you want a fresh run or need to reclaim disk space.
+
+## Tests and Evaluation
+
+Run the test suite:
+
 ```bash
-# Web UI (Recommended)
-streamlit run src/ui.py
-
-# Opens at http://localhost:8501
-```
----
-
-
-
----
-
-## 📁 Project Structure
-
-```
-Finance_Insight_Lite/
-├── data/                    # Document storage and processing
-│   ├── cache/
-│   ├── database/
-│   ├── processed/
-│   ├── rew/
-│   ├── uploaded/
-│   └── vector_db/
-├── database/                # Local vector store indices
-├── images/                  # UI assets
-│   ├── chatbots_icon.png
-│   ├── logo.png
-│   └── user_icon.png
-├── node_modules/            # Node.js dependencies
-├── src/
-│   ├── finance_insight_lite/
-│   │   ├── modules/
-│   │   │   ├── processor.py
-│   │   │   ├── rag_agent.py        # RAG agent implementation ⭐
-│   │   │   └── verctor_store.py
-│   │   └── __init__.py
-│   ├── app.py               # CLI entry point
-│   └── ui.py                # Streamlit web interface ⭐
-├── .env                     # Environment variables
-├── .gitignore               # Git exclusion rules
-├── main.py                  # API entry point (FastAPI service) ⭐
-├── package-lock.json
-├── package.json
-├── pyproject.toml
-├── README.md
-├── requirements.txt
-└── uv.lock                  # UV dependency lockfile
+python -m pytest
 ```
 
-## 🔧 Core Modules
+Export chat history for evaluation:
 
-### `rag_agent.py` (Main RAG Engine)
-The heart of the system with four main components:
-
-#### 1. **CRAGRetriever** - Corrective RAG
-```python
-# Batch-grades documents for relevance
-retriever = CRAGRetriever(vector_db, llm)
-relevant_docs = retriever.get_relevant_documents(question, k=5)
-```
-- Retrieves documents semantically similar to query
-- Batch grades all documents for relevance
-- Filters to only high-confidence matches
-- Fallback mechanism if no documents match
-
-#### 2. **SelfRAGVerifier** - Answer Verification
-```python
-# Validates answers against sources
-verifier = SelfRAGVerifier(llm)
-verification = verifier.verify_answer(question, answer, sources)
-```
-- Rates answer accuracy (1-10 scale)
-- Checks source support
-- Optional (can be disabled for speed)
-
-#### 3. **FinancialDataExtractor** - Data Extraction
-```python
-# Extracts numerical data from documents
-extractor = FinancialDataExtractor(vector_db, llm)
-df = extractor.extract_data_from_query("net income")
-```
-- LLM-assisted extraction with JSON parsing
-- Regex fallback for robust parsing
-- Automatic demo data if no data found
-- Data validation and cleaning
-
-#### 4. **ChartGenerator** - Visualizations
-```python
-# Creates interactive Plotly charts
-generator = ChartGenerator()
-fig = generator.create_bar_chart(df, 'label', 'value', 'Revenue by Quarter')
-```
-- Bar, Line, Pie, Scatter, Area charts
-- Handles categorical and numeric axes
-- Financial styling with color palettes
-- Responsive layout
-
-### `processor.py` - Document Processing
-```python
-# All-in-one processing with caching
-result = load_documents_fastest(
-    file_path="report.pdf",
-    use_cache=True,
-    max_workers=2
-)
-documents = result['documents']
-file_type = result['file_type']
-```
-
-**Features**:
-- Parallel PDF/Excel processing
-- Automatic file-hash caching
-- Smart chunking strategies
-- Metadata preservation
-
-### `verctor_store.py` - Vector Database
-```python
-# Build and manage vector embeddings
-db = build_vector_db(documents, db_path="./database")
-results = db.similarity_search(query, k=5)
-```
-
-**Features**:
-- Chroma + FAISS integration
-- HuggingFace embeddings
-- Persistent storage
-- Similarity search
-
-## 🎨 User Interface Features
-
-### Sidebar Controls
-- **Document Upload**: Support for PDF and Excel files
-- **Processing**: One-click document processing with progress bar
-- **Settings**: Customizable RAG parameters
-- **Cache Management**: View cache size and clear cache
-
-### Main Chat Interface
-- **Message History**: Full conversation context
-- **Source Attribution**: Page references for answers
-- **Confidence Scores**: High/Medium/Low confidence indicators
-- **Metadata Display**: Documents used, verification scores
-- **Charts & Tables**: Integrated visualizations with data export
-
-### Sample Questions
-Quick-start buttons for common queries:
-- "What is the net income?"
-- "What is the free cash flow?"
-- "What is the gearing ratio?"
-- "How much was the dividend declared?"
-- "Draw a pie chart of expense breakdown"
-- "Visualize the profit margins"
-
-## 🔑 Configuration Guide
-
-### Environment Variables
-```env
-# Required
-GROQ_API_KEY=your_key_here
-
-# Optional
-LANGCHAIN_TRACING_V2=true
-LANGCHAIN_API_KEY=your_key_here
-```
-
-### RAG Settings (In-App)
-| Setting | Default | Range | Effect |
-|---------|---------|-------|--------|
-| **Self-RAG** | Enabled | On/Off | Accuracy vs Speed |
-| **Relevance Threshold** | 0.6 | 0.0-1.0 | Answer precision |
-| **Doc Retrieval** | 3 | 3-10 | Context coverage |
-| **Chart Type** | bar | - | Default visualization |
-| **Show Data Table** | On | On/Off | Data export option |
-
-## 📊 Visualization Examples
-
-### Supported Chart Types
-
-**Bar Chart**
-```
-"Draw a bar chart of quarterly revenue"
-→ Shows revenue by quarter with numeric comparison
-```
-
-**Line Chart**
-```
-"Plot profit margin trends"
-→ Shows trends over time with markers
-```
-
-**Pie Chart**
-```
-"Create a pie chart of expense breakdown"
-→ Shows proportional distribution
-```
-
-**Scatter Chart**
-```
-"Visualize correlation between metrics"
-→ Shows relationships with optional trendline
-```
-
-**Area Chart**
-```
-"Display cumulative revenue"
-→ Shows stacked area representation
-
-## 🔐 API Keys
-
-### Groq API
-1. Visit https://console.groq.com
-2. Sign up for free account
-3. Generate API key
-4. Add to `.env` file
-
-**Why Groq?**
-- ⚡ Ultra-fast inference (100+ tokens/sec)
-- 💰 Generous free tier
-- 🤖 Latest LLaMA models
-- 📈 High accuracy for financial analysis
-
-## 📈 Performance Metrics
-
-| Operation | Time | Notes |
-|-----------|------|-------|
-| PDF Processing | 2-5s | 50-100 pages, cached after 1st run |
-| Excel Processing | 1-3s | Up to 10,000 rows |
-| Query Response | 3-8s | With retrieval + verification |
-| Chart Generation | <1s | From extracted data |
-| Document Caching | <100ms | Instant reload |
-
-## 🐛 Troubleshooting
-
-### Chart Not Displaying
-- Ensure document contains numeric data
-- Try a different chart type
-- Check data extraction in logs
-
-### "No relevant documents found"
-- Increase relevance threshold lower
-- Ask more specific questions
-- Ensure documents are uploaded
-
-### Slow Processing
-- Disable Self-RAG for faster responses
-- Reduce document retrieval count
-- Clear cache and re-upload
-
-### API Errors
-- Verify GROQ_API_KEY is correct
-- Check internet connection
-- Review API quota at console.groq.com
-
-## 🛠️ Development
-
-### Running Tests
 ```bash
 python scripts/export_chat_history.py
+```
 
+Run the financial RAG judge:
+
+```bash
 python -m finance_insight_lite.modules.eval \
   --input tests/fixtures/chat_history_export.jsonl \
   --output tests/output/judge_results.json \
   --with-judge
 ```
 
-### Building Distribution
-```bash
-pip install build
-python -m build
-```
+The judge path may require model credentials and network access.
 
-### Code Quality
-```bash
-pip install pylance black flake8
-black src/
-flake8 src/
-```
+## Troubleshooting
 
-## 📝 Usage Examples
+### The app says no document is loaded
 
-### Example 1: Extract & Visualize Revenue
-```
-User: "Draw a bar chart for the net income"
-→ System: Extracts net income from documents
-→ Creates interactive bar chart
-→ Shows data table with values
-```
+Upload files in the Streamlit sidebar and click **Process All Documents** before asking questions.
 
-### Example 2: Multi-Document Analysis
-```
-User: "What was the total revenue across all quarters?"
-→ System: Retrieves relevant sections from all documents
-→ Aggregates quarterly data
-→ Provides answer with page references
-```
+### Groq requests fail
 
-### Example 3: Financial Ratio Analysis
-```
-User: "What is the gearing ratio?"
-→ System: Finds financial statements
-→ Calculates ratio from relevant metrics
-→ Provides context and interpretation
-```
+Check that `.env` exists in the project root and contains a valid `GROQ_API_KEY`. Also confirm your Groq account has available quota.
 
-## 📚 Resources
+### Image upload or embedded-image extraction fails
 
-- **LangChain Docs**: https://docs.langchain.com
-- **Groq Docs**: https://console.groq.com/docs
-- **Streamlit Docs**: https://docs.streamlit.io
-- **Plotly Docs**: https://plotly.com/python
+Image OCR relies on optional runtime imports in `processor.py`. If your workflow does not need image OCR, use PDF, Excel, or CSV files. If you do need it, install the missing OCR/OpenCV dependencies reported by the traceback.
 
-## 🤝 Contributing
+### Responses get slow
 
-1. Fork the repository
-2. Create feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit changes (`git commit -m 'Add amazing feature'`)
-4. Push to branch (`git push origin feature/amazing-feature`)
-5. Open Pull Request
+Large documents, many retrieved chunks, answer verification, and long chat sessions can increase latency. Try lowering the number of retrieved documents, disabling Self-RAG, clearing chat history, or processing fewer files at once.
 
-## 📄 License
+### Charts do not appear
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+Charts require extractable numeric data. Try asking for a specific metric and period, for example: `Draw a bar chart of net income by quarter`.
 
-## 👨‍💼 About
+## Notes for Contributors
 
-**Finance Insight Lite** is a lightweight yet powerful tool for financial document analysis. Built with modern AI/ML technologies, it makes financial intelligence accessible to everyone.
+- Prefer keeping financial logic in `src/finance_insight_lite/modules/`.
+- Preserve metadata when adding new document loaders; retrieval and source attribution depend on it.
+- Keep UI state small before passing chat history into the LLM. Raw chunks and Plotly JSON can quickly bloat prompts.
+- Avoid installing `uvicorn[standard]` on macOS for this app; the project intentionally uses plain `uvicorn` because `uvloop` can conflict with Streamlit.
 
-**Current Version**: 0.2.0  
-**Last Updated**: February 3, 2026  
-**Status**: Active Development ✅
+## License
 
----
-
-## ⭐ Quick Tips
-
-1. **Upload multiple files** at once for comprehensive analysis
-2. **Use specific keywords** in questions for better results
-3. **Check source pages** to validate answers
-4. **Experiment with chart types** to find best visualization
-5. **Clear cache periodically** to free up disk space
-6. **Adjust relevance threshold** if getting irrelevant results
-
----
-
-**Questions or Issues?** Create an issue on GitHub or contact support.
-
-Happy analyzing! 📈🚀
+No license file is currently included in this repository. Add one before distributing or reusing this project outside private development.

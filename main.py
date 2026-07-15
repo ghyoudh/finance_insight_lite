@@ -18,7 +18,7 @@ import sys
 project_root = Path(__file__).parent
 sys.path.append(str(project_root / "src"))
 
-from finance_insight_lite.modules.processor import pdf_to_documents
+from finance_insight_lite.modules.processor import load_documents_fastest, pdf_to_documents
 from finance_insight_lite.modules.verctor_store import build_vector_db
 from finance_insight_lite.modules.rag_agent import FinancialRAGAgent
 
@@ -59,7 +59,7 @@ class QueryRequest(BaseModel):
 
 class QueryResponse(BaseModel):
     answer: str
-    source_pages: List[int]
+    source_pages: List[Any]
     confidence: str
     relevant_docs_count: int
     verification: Optional[Dict[str, Any]] = None
@@ -112,7 +112,7 @@ async def upload_document(
     use_self_rag: bool = True
 ):
     """
-    Upload and process a PDF document
+    Upload and process a PDF, Excel, CSV, image, or supported financial document
     
     This endpoint:
     1. Saves the uploaded PDF
@@ -121,8 +121,9 @@ async def upload_document(
     4. Initializes the RAG agent
     """
     
-    if not file.filename or not file.filename.endswith('.pdf'):
-        raise HTTPException(status_code=400, detail="Only PDF files are supported")
+    supported_extensions = (".pdf", ".xlsx", ".xls", ".csv", ".png", ".jpg", ".jpeg")
+    if not file.filename or not file.filename.lower().endswith(supported_extensions):
+        raise HTTPException(status_code=400, detail="Unsupported file type")
     
     try:
         # Save uploaded file
@@ -135,26 +136,28 @@ async def upload_document(
             shutil.copyfileobj(file.file, buffer)
         
         # Process document
-        documents = pdf_to_documents(str(file_path))
+        load_result = load_documents_fastest(str(file_path), max_workers=1)
+        documents = load_result["documents"]
         
         # Build vector database
         db_path = Path("data/vector_db")
         db_path.mkdir(parents=True, exist_ok=True)
         
-        state.vector_db = build_vector_db(documents, db_path=str(db_path))
+        state.vector_db, chunks = build_vector_db(
+            documents,
+            db_path=str(db_path),
+            source_paths=[str(file_path)],
+        )
         
         # Create agent
-        state.agent = FinancialRAGAgent(
-            state.vector_db,
-            use_self_rag=use_self_rag
-        )
+        state.agent = FinancialRAGAgent(state.vector_db, chunks=chunks)
         
         # Store document info
         state.document_info = {
             "filename": file.filename,
             "pages": len(documents),
             "processed_at": datetime.now().isoformat(),
-            "chunks": len(documents) * 2  # Approximate
+            "chunks": len(chunks)
         }
         
         return DocumentInfo(**state.document_info)
@@ -182,10 +185,7 @@ async def query_document(request: QueryRequest):
         start_time = time.time()
         
         # Process query
-        result = state.agent.process_query(
-            question=request.question,
-            max_retries=request.max_retries
-        )
+        result = state.agent.process_query(query=request.question)
         
         processing_time = (time.time() - start_time) * 1000  # Convert to ms
         
@@ -257,13 +257,17 @@ async def startup_event():
         try:
             print(f"📂 Loading default document: {default_pdf.name}")
             documents = pdf_to_documents(str(default_pdf))
-            state.vector_db = build_vector_db(documents, db_path="data/vector_db")
-            state.agent = FinancialRAGAgent(state.vector_db, use_self_rag=True)
+            state.vector_db, chunks = build_vector_db(
+                documents,
+                db_path="data/vector_db",
+                source_paths=[str(default_pdf)],
+            )
+            state.agent = FinancialRAGAgent(state.vector_db, chunks=chunks)
             state.document_info = {
                 "filename": default_pdf.name,
                 "pages": len(documents),
                 "processed_at": datetime.now().isoformat(),
-                "chunks": len(documents) * 2
+                "chunks": len(chunks)
             }
             print(f"✅ Default document loaded: {len(documents)} pages")
         except Exception as e:

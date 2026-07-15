@@ -1,0 +1,163 @@
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+import pandas as pd
+from langchain_core.documents import Document
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+from finance_insight_lite.modules.processor import csv_to_documents_optimized
+from finance_insight_lite.modules.rag_agent import CRAGRetriever, SelfRefiningAnswerEngine
+from finance_insight_lite.modules.structured_tables import (
+    is_small_table,
+    render_full_table_document,
+    small_table_documents,
+)
+from finance_insight_lite.modules.verctor_store import _load_or_create_chunks
+from finance_insight_lite.modules.workflow_coordinator import WorkflowCoordinator
+
+
+class FakeRetriever:
+    def __init__(self, full_table_documents=None, relevant_documents=None):
+        self.full_table_documents = full_table_documents or []
+        self.relevant_documents = relevant_documents or []
+        self.crag_called = False
+
+    def get_full_table_documents(self, query=""):
+        return self.full_table_documents
+
+    def get_relevant_documents(self, query, k=None):
+        self.crag_called = True
+        return [{"document": document, "relevant": True} for document in self.relevant_documents]
+
+
+class FakeLLM:
+    def with_structured_output(self, _schema):
+        return self
+
+
+class StructuredTableRetrievalTests(unittest.TestCase):
+    def test_csv_loader_emits_one_document_per_row_with_metadata(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            csv_path = Path(tmpdir) / "ledger.csv"
+            pd.DataFrame({
+                "entry_id": ["E-101", "E-102"],
+                "amount_sar": [1000, 2000],
+            }).to_csv(csv_path, index=False)
+
+            documents = csv_to_documents_optimized(str(csv_path))
+
+        self.assertEqual(len(documents), 2)
+        self.assertEqual([doc.metadata["row"] for doc in documents], [1, 2])
+        self.assertTrue(all(doc.metadata["table_row"] for doc in documents))
+        self.assertIn("entry_id: E-101", documents[0].page_content)
+
+    def test_tabular_rows_are_not_resplit_or_overlapped_in_vector_chunks(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            csv_path = Path(tmpdir) / "ledger.csv"
+            pd.DataFrame({
+                "entry_id": ["ROW-001", "ROW-002", "ROW-003"],
+                "amount_sar": [1000, 2000, 3000],
+            }).to_csv(csv_path, index=False)
+            documents = csv_to_documents_optimized(str(csv_path))
+
+            chunks = _load_or_create_chunks(documents, Path(tmpdir) / "chunks.pkl")
+
+        self.assertEqual(len(chunks), 3)
+        for marker in ["ROW-001", "ROW-002", "ROW-003"]:
+            occurrences = sum(chunk.page_content.count(marker) for chunk in chunks)
+            self.assertEqual(occurrences, 1)
+
+    def test_small_excel_file_renders_full_table_context(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            xlsx_path = Path(tmpdir) / "pipeline.xlsx"
+            pd.DataFrame({
+                "deal_id": ["DEAL-201", "DEAL-202"],
+                "value_sar": [75000, 90000],
+            }).to_excel(xlsx_path, index=False)
+
+            self.assertTrue(is_small_table(str(xlsx_path)))
+            document = render_full_table_document(str(xlsx_path))
+
+        self.assertTrue(document.metadata["table_full_context"])
+        self.assertIn("DEAL-201", document.page_content)
+        self.assertIn("DEAL-202", document.page_content)
+
+    def test_large_csv_does_not_get_full_table_bypass(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            csv_path = Path(tmpdir) / "large.csv"
+            pd.DataFrame({
+                "row_id": [f"ROW-{i:03d}" for i in range(501)],
+                "amount_sar": list(range(501)),
+            }).to_csv(csv_path, index=False)
+
+            self.assertFalse(is_small_table(str(csv_path)))
+            self.assertEqual(small_table_documents([str(csv_path)]), [])
+
+    def test_workflow_routes_small_tables_before_crag(self):
+        full_table = Document(
+            page_content="Source file: ledger.csv\nCSV:\nentry_id,amount_sar\nE-101,1000",
+            metadata={"source": "ledger.csv", "table_full_context": True},
+        )
+        normal_doc = Document(page_content="fallback", metadata={})
+        retriever = FakeRetriever(
+            full_table_documents=[full_table],
+            relevant_documents=[normal_doc],
+        )
+        coordinator = WorkflowCoordinator(fast_llm=FakeLLM(), crag_retriever=retriever)
+
+        routed = coordinator.route("reconcile ledger")
+
+        self.assertEqual(routed["instruction"].action, "ANSWER_FROM_FULL_TABLE")
+        self.assertEqual(routed["documents"], [full_table])
+        self.assertFalse(retriever.crag_called)
+
+    def test_workflow_falls_back_to_crag_without_small_tables(self):
+        normal_doc = Document(page_content="fallback", metadata={})
+        retriever = FakeRetriever(relevant_documents=[normal_doc])
+        coordinator = WorkflowCoordinator(fast_llm=FakeLLM(), crag_retriever=retriever)
+
+        routed = coordinator.route("summarize the filing")
+
+        self.assertEqual(routed["instruction"].action, "ANSWER_FROM_CONTEXT")
+        self.assertEqual(routed["documents"], [normal_doc])
+        self.assertTrue(retriever.crag_called)
+
+    def test_crag_dedupes_retrieved_chunks_and_scores_by_content(self):
+        docs = [
+            Document(page_content="amount_sar: 1000", metadata={"row": 1}),
+            Document(page_content=" amount_sar: 1000 ", metadata={"row": 1}),
+            Document(page_content="amount_sar: 2000", metadata={"row": 2}),
+        ]
+
+        deduped_docs, deduped_scores = CRAGRetriever._dedupe_docs(docs, [0.9, 0.8, 0.7])
+
+        self.assertEqual([doc.page_content.strip() for doc in deduped_docs], [
+            "amount_sar: 1000",
+            "amount_sar: 2000",
+        ])
+        self.assertEqual(deduped_scores, [0.9, 0.7])
+
+    def test_unverified_numbers_are_removed_from_final_answer_text(self):
+        answer = "Open pipeline is 165,000 SAR.\nDEAL-206 duplicate is 25,000 SAR."
+        verification = {
+            "number_checks": [
+                {
+                    "number_in_answer": "25,000",
+                    "row_label_in_source": "NOT_FOUND_IN_SOURCES",
+                    "matches_question_intent": False,
+                }
+            ]
+        }
+
+        cleaned = SelfRefiningAnswerEngine._remove_unverified_numbers(answer, verification)
+
+        self.assertIn("Open pipeline is 165,000 SAR.", cleaned)
+        self.assertNotIn("DEAL-206 duplicate", cleaned)
+        self.assertIn("The figure 25,000 was not found in the provided data.", cleaned)
+
+
+if __name__ == "__main__":
+    unittest.main()

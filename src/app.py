@@ -63,7 +63,7 @@ def wait_for_api(url="http://localhost:8000/health", timeout=60, check_interval=
 
 def load_all_files_from_folder(folder_path):
     """
-    Load all PDF and Excel files from a folder
+    Load all PDF, Excel, and CSV files from a folder
     
     Args:
         folder_path: Path to the folder containing files
@@ -74,9 +74,9 @@ def load_all_files_from_folder(folder_path):
     all_documents = []
     folder = Path(folder_path)
     
-    # Search for all PDF and Excel files only
+    # Search for all PDF, Excel, and CSV files only
     files = list(folder.glob("*.pdf")) + list(folder.glob("*.xlsx")) + \
-            list(folder.glob("*.xls"))
+            list(folder.glob("*.xls")) + list(folder.glob("*.csv"))
     
     print(f"Found {len(files)} files to process")
     print("=" * 60)
@@ -90,11 +90,11 @@ def load_all_files_from_folder(folder_path):
                 all_documents.extend(result['documents'])
                 print(f"   ✓ Loaded {result['relevant_docs_count']} pages")
                 
-            elif file.suffix in ['.xlsx', '.xls']:
-                # Use the load_documents_fastest function for Excel
+            elif file.suffix in ['.xlsx', '.xls', '.csv']:
+                # Use the load_documents_fastest function for structured tables
                 result = load_documents_fastest(str(file))
                 all_documents.extend(result['documents'])
-                print(f"   ✓ Loaded {result['relevant_docs_count']} sheets")
+                print(f"   ✓ Loaded {result['relevant_docs_count']} table rows")
                 
         except Exception as e:
             print(f"   ❌ Error reading {file.name}: {e}")

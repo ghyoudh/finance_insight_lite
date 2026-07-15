@@ -1,5 +1,6 @@
-import fitz  # PyMuPDF
+import pymupdf as fitz  # PyMuPDF
 import pandas as pd
+import datetime
 import os
 import re
 import io
@@ -450,8 +451,24 @@ def _looks_numeric(value):
     try:
         float(text)
         return True
-    except ValueError:
+    except (TypeError, ValueError):
         return False
+
+
+def _looks_like_data_value(value):
+    """Return True for values that are much more likely data than a header."""
+    if pd.isna(value):
+        return False
+    if _looks_numeric(value):
+        return True
+    if isinstance(value, (pd.Timestamp, datetime.datetime, datetime.date)):
+        return True
+
+    # Transaction IDs, invoice references, dates read as strings, and similar
+    # values commonly mix letters/punctuation with digits. Treating these as
+    # ordinary text caused entire ledgers and bank statements to be classified
+    # as header rows, leaving no documents for the vector database.
+    return any(character.isdigit() for character in str(value))
 
 
 def _is_probable_header_row(row_values):
@@ -464,15 +481,16 @@ def _is_probable_header_row(row_values):
     differ per section — misread as data and named 'Unnamed: N'.
 
     A header row: has at least 2 non-null cells, and most of those cells are
-    NOT numeric (column headers are text; data rows are mostly numbers).
+    not data-like (column headers are text; financial data rows commonly
+    contain numbers, dates, transaction IDs, or invoice references).
     A single-cell row (e.g. a merged title/section banner) is NOT treated as
     a header — it has nothing to attach to a column index.
     """
     non_null = [v for v in row_values if pd.notna(v) and str(v).strip() != ""]
     if len(non_null) < 2:
         return False
-    numeric_count = sum(1 for v in non_null if _looks_numeric(v))
-    return (numeric_count / len(non_null)) < 0.3
+    data_value_count = sum(1 for v in non_null if _looks_like_data_value(v))
+    return (data_value_count / len(non_null)) < 0.3
 
 
 def excel_to_documents_optimized(excel_path, sheet_name=None, chunk_size=1500, extract_images=True):
@@ -593,6 +611,7 @@ def excel_to_documents_optimized(excel_path, sheet_name=None, chunk_size=1500, e
                     "sheet_name": sheet,
                     "row": row_idx + 1,
                     "total_rows": total_rows,
+                    "table_row": True,
                     **({"chunk": part_num, "total_chunks": num_parts} if part_num is not None else {}),
                 }
             )
@@ -602,6 +621,37 @@ def excel_to_documents_optimized(excel_path, sheet_name=None, chunk_size=1500, e
         documents.extend(_extract_embedded_images_from_excel(excel_path))
 
     print(f"✓ Loaded {len(documents)} documents from Excel")
+    return documents
+
+
+def csv_to_documents_optimized(csv_path):
+    """Load CSV as one complete row per Document with explicit column labels."""
+    print(f"Loading CSV: {csv_path}")
+    df = pd.read_csv(csv_path)
+    documents = []
+    source_name = os.path.basename(csv_path)
+
+    for row_idx, row in df.iterrows():
+        parts = []
+        for column, value in row.items():
+            if pd.isna(value) or str(value).strip() == "":
+                continue
+            parts.append(f"{column}: {value}")
+
+        if not parts:
+            continue
+
+        documents.append(Document(
+            page_content=f"CSV: {source_name}\n" + " | ".join(parts),
+            metadata={
+                "source": source_name,
+                "row": row_idx + 1,
+                "total_rows": len(df),
+                "table_row": True,
+            },
+        ))
+
+    print(f"✓ Loaded {len(documents)} documents from CSV")
     return documents
 
 
@@ -637,6 +687,10 @@ def load_documents_fastest(file_path, use_cache=True, max_workers=1, **kwargs):
     elif file_extension in ['.xlsx', '.xls']:
         docs = excel_to_documents_optimized(file_path, **kwargs)
         file_type = 'Excel'
+
+    elif file_extension == '.csv':
+        docs = csv_to_documents_optimized(file_path)
+        file_type = 'CSV'
 
     elif file_extension in IMAGE_EXTENSIONS:
         # NEW: صور مستقلة (رفعها المستخدم مباشرة، مو مضمّنة جوه ملف آخر)

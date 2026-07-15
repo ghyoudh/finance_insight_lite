@@ -177,6 +177,13 @@ class CRAGRetriever:
 
     MIN_CONFIDENCE_THRESHOLD = 0.45
     GRADING_SNIPPET_CHARS = 600
+    TABLE_BYPASS_KEYWORDS = {
+        "reconcile", "reconciliation", "ledger", "bank statement", "duplicate",
+        "variance", "mismatch", "pipeline", "budget", "actual", "csv", "excel",
+        "spreadsheet", "table", "row", "rows", "invoice", "deal",
+        "مطابقة", "تسوية", "دفتر", "كشف", "بنك", "مكرر", "تكرار",
+        "فرق", "فروقات", "ميزانية", "فعلي", "جدول", "صف", "فاتورة", "صفقة",
+    }
 
     def __init__(
         self,
@@ -240,6 +247,46 @@ CRITICAL RULES:
 - Irrelevant: no real financial substance connected to the question's topic"""),
             ("human", "Question: {question}\n\nDocuments:\n{document}\n\nGrade each document now via the schema.")
         ])
+
+    def get_full_table_documents(self, query: str = "") -> List[Any]:
+        full_table_documents = list(getattr(self.vector_db, "_small_table_documents", []) or [])
+        if not full_table_documents:
+            return []
+
+        source_paths = list(getattr(self.vector_db, "_source_paths", []) or [])
+        if not source_paths:
+            return full_table_documents
+
+        structured_paths = [
+            path for path in source_paths
+            if str(path).lower().endswith((".csv", ".xlsx", ".xls"))
+        ]
+        all_sources_are_small_tables = (
+            len(structured_paths) == len(source_paths)
+            and len(full_table_documents) == len(structured_paths)
+        )
+        if all_sources_are_small_tables:
+            return full_table_documents
+
+        query_lower = query.lower()
+        if any(keyword in query_lower for keyword in self.TABLE_BYPASS_KEYWORDS):
+            return full_table_documents
+
+        return []
+
+    @staticmethod
+    def _dedupe_docs(docs: list, scores: Optional[list] = None):
+        seen = set()
+        out_docs, out_scores = [], []
+        for i, document in enumerate(docs):
+            key = document.page_content.strip()
+            if key in seen:
+                continue
+            seen.add(key)
+            out_docs.append(document)
+            if scores is not None:
+                out_scores.append(scores[i])
+        return out_docs, (out_scores if scores is not None else None)
 
     def batch_grade_documents(self, question: str, documents: List[Any]) -> List[bool]:
         if not documents:
@@ -327,6 +374,7 @@ CRITICAL RULES:
         print(f"🔍 نافذة الاسترجاع الأولية (k_max): {k_max}")
 
         candidate_docs, scores = self._retrieve_candidates(question, k_max=k_max)
+        candidate_docs, scores = self._dedupe_docs(candidate_docs, scores)
 
         if not candidate_docs:
             return []
@@ -399,8 +447,8 @@ class VerificationResult(BaseModel):
 
 class SelfRAGVerifier:
 
-    VERIFICATION_SNIPPET_CHARS = 800
-    MAX_SOURCES_FOR_VERIFICATION = 3
+    VERIFICATION_SNIPPET_CHARS = 6000
+    MAX_SOURCES_FOR_VERIFICATION = 8
 
     def __init__(self, llm, rate_limiter: Optional["TPMRateLimiter"] = None):
         self.llm = llm
@@ -488,6 +536,10 @@ Grade this answer now via the schema.""")
                 "passed": passed,
                 "missing_refs": missing_refs,
                 "notes": result.critical_notes,
+                "number_checks": [
+                    check.model_dump() if hasattr(check, "model_dump") else check.dict()
+                    for check in result.number_checks
+                ],
             }
         except Exception as e:
             print(f"⚠️ Verification error: {e}")
@@ -497,6 +549,7 @@ Grade this answer now via the schema.""")
                 "missing_refs": [],
                 "notes": "Automated verification was unavailable for this response; "
                          "treat the figures above with extra caution.",
+                "number_checks": [],
             }
 
 
@@ -784,6 +837,46 @@ Provide the corrected answer now.""")
 
     _HAS_DIGIT_RE = re.compile(r'[0-9\u0660-\u0669]')
 
+    @staticmethod
+    def _unsupported_not_found_checks(verification: Dict[str, Any]) -> List[Dict[str, Any]]:
+        checks = verification.get("number_checks") or []
+        return [
+            check
+            for check in checks
+            if str(check.get("row_label_in_source", "")).strip().upper() == "NOT_FOUND_IN_SOURCES"
+        ]
+
+    @staticmethod
+    def _remove_unverified_numbers(answer: str, verification: Dict[str, Any]) -> str:
+        unsupported_checks = SelfRefiningAnswerEngine._unsupported_not_found_checks(verification)
+        if not unsupported_checks:
+            return answer
+
+        unsupported_numbers = [
+            str(check.get("number_in_answer", "")).strip()
+            for check in unsupported_checks
+            if str(check.get("number_in_answer", "")).strip()
+        ]
+        if not unsupported_numbers:
+            return answer
+
+        kept_lines = []
+        for line in answer.splitlines():
+            if any(number in line for number in unsupported_numbers):
+                continue
+            kept_lines.append(line)
+
+        cleaned = "\n".join(kept_lines).strip()
+        statements = [
+            f"The figure {number} was not found in the provided data."
+            for number in unsupported_numbers
+        ]
+        replacement = "\n".join(statements)
+
+        if cleaned:
+            return f"{cleaned}\n\n{replacement}"
+        return replacement
+
     def run(self, query: str, context: str, chat_history: list, source_texts: List[str]) -> Dict[str, Any]:
         try:
             _t = time.time()
@@ -839,10 +932,15 @@ Provide the corrected answer now.""")
 
         best_attempt = max(attempts, key=lambda a: a["verification"]["rating"])
         converged = attempts[-1]["verification"]["passed"]
+        best_answer = best_attempt["answer"]
+        best_verification = best_attempt["verification"]
+
+        if not converged:
+            best_answer = self._remove_unverified_numbers(best_answer, best_verification)
 
         return {
-            "answer": self._strip_json_artifacts(best_attempt["answer"]),
-            "verification": best_attempt["verification"],
+            "answer": self._strip_json_artifacts(best_answer),
+            "verification": best_verification,
             "attempts_made": len(attempts),
             "self_refine_converged": converged,
         }
@@ -1198,8 +1296,17 @@ class FinancialRAGAgent:
 
         relevant_docs = routed["documents"]
 
+        def _context_label(doc) -> str:
+            if doc.metadata.get("table_full_context"):
+                return f"[Source {doc.metadata.get('source', 'table')}]"
+            if doc.metadata.get("page") is not None:
+                return f"[Page {doc.metadata.get('page')}]"
+            if doc.metadata.get("sheet_name"):
+                return f"[Sheet {doc.metadata.get('sheet_name')}]"
+            return f"[Source {doc.metadata.get('source', 'document')}]"
+
         context = "\n\n".join([
-            f"[Page {doc.metadata.get('page')}]\n{doc.page_content}"
+            f"{_context_label(doc)}\n{doc.page_content}"
             for doc in relevant_docs
         ])
 
@@ -1208,6 +1315,8 @@ class FinancialRAGAgent:
         print(f"   {context[:300]}{'...' if len(context) > 300 else ''}")
 
         def _source_label(doc) -> Optional[str]:
+            if doc.metadata.get("table_full_context"):
+                return str(doc.metadata.get("source"))
             page = doc.metadata.get('page')
             if page is not None:
                 return str(page)
