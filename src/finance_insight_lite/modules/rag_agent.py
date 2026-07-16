@@ -440,8 +440,9 @@ class VerificationResult(BaseModel):
     critical_notes: str = Field(
         default="No issues found.",
         max_length=600,
-        description="One or two sentences, in English, describing the single most important issue "
-                    "(or 'No issues found' if the answer is well supported)"
+        description="One or two sentences, written in the TARGET RESPONSE LANGUAGE given in "
+                    "the prompt, describing the single most important issue (or the "
+                    "equivalent of 'No issues found' if the answer is well supported)"
     )
 
 
@@ -460,6 +461,16 @@ class SelfRAGVerifier:
 
 Compare the 'Answer' against the 'Source Documents' and grade it strictly via
 the provided schema. Do not write any text outside the schema.
+
+### LANGUAGE:
+- TARGET RESPONSE LANGUAGE: {answer_language}.
+- Write `critical_notes` in the TARGET RESPONSE LANGUAGE. If the target is
+  Arabic, write critical_notes fully in Arabic; if English, write it fully
+  in English. The language of the Question/Answer/Sources you are grading
+  must not override this target.
+- All other schema fields (relevance labels, row_label_in_source copied
+  verbatim from Sources, etc.) keep their normal format regardless of
+  language.
 
 STEP 1 — number_checks (do this FIRST, before deciding rating/passed):
 - List every distinct number/figure mentioned in the Answer.
@@ -480,9 +491,8 @@ STEP 2 — rating/passed (derive these FROM step 1, don't decide independently):
   (real number, wrong row/label), say so explicitly (e.g. "figure X is
   attributed to the wrong row/label in the source table") — not vague
   statements.
-- critical_notes must always be written in English, regardless of the
-  question's language, since it may be shown directly to the user. Keep it
-  under 40 words."""),
+- critical_notes must always be written in the TARGET RESPONSE LANGUAGE
+  above, since it may be shown directly to the user. Keep it under 40 words."""),
             ("human", """Question: {question}
 
 Answer: {answer}
@@ -492,7 +502,21 @@ Sources: {sources}
 Grade this answer now via the schema.""")
         ])
 
-    def verify_answer(self, question: str, answer: str, sources: List[str]) -> Dict[str, Any]:
+    @staticmethod
+    def _response_language_for_text(text: str) -> str:
+        """Detect whether Arabic or English should be the target language."""
+        text = text or ""
+        arabic_chars = len(re.findall(r"[\u0600-\u06FF]", text))
+        latin_chars = len(re.findall(r"[A-Za-z]", text))
+        if arabic_chars and arabic_chars >= latin_chars:
+            return "Arabic"
+        return "English"
+
+    def verify_answer(self, question: str, answer: str, sources: List[str],
+                       answer_language: Optional[str] = None) -> Dict[str, Any]:
+        if answer_language is None:
+            answer_language = self._response_language_for_text(question)
+
         try:
             trimmed_sources = "\n\n".join(
                 s[:self.VERIFICATION_SNIPPET_CHARS]
@@ -501,7 +525,8 @@ Grade this answer now via the schema.""")
             formatted_prompt = self.verification_prompt.format(
                 question=question,
                 answer=answer,
-                sources=trimmed_sources
+                sources=trimmed_sources,
+                answer_language=answer_language,
             )
 
             if self.rate_limiter is not None:
@@ -543,12 +568,18 @@ Grade this answer now via the schema.""")
             }
         except Exception as e:
             print(f"⚠️ Verification error: {e}")
+            fallback_notes = (
+                "تعذّر إجراء التحقق الآلي من هذه الإجابة؛ يُرجى التعامل مع "
+                "الأرقام أعلاه بحذر إضافي."
+                if answer_language == "Arabic" else
+                "Automated verification was unavailable for this response; "
+                "treat the figures above with extra caution."
+            )
             return {
                 "rating": 5,
                 "passed": False,
                 "missing_refs": [],
-                "notes": "Automated verification was unavailable for this response; "
-                         "treat the figures above with extra caution.",
+                "notes": fallback_notes,
                 "number_checks": [],
             }
 
@@ -903,26 +934,41 @@ Provide the corrected answer now.""")
         return replacement
 
     def run(self, query: str, context: str, chat_history: list, source_texts: List[str]) -> Dict[str, Any]:
+        answer_language = self._response_language_for_query(query)
+
         try:
             _t = time.time()
             answer = self._generate_initial(query, context, chat_history)
             print(f"⏱️   ├─ Initial Answer Generation: {time.time() - _t:.2f}s")
         except Exception as e:
             print(f"⚠️ Answer generation error: {e}")
+            failure_answer = (
+                "تعذّر إنشاء إجابة في الوقت الحالي. يُرجى المحاولة مرة أخرى بعد قليل."
+                if answer_language == "Arabic" else
+                "We were unable to generate a response at this time. Please try again shortly."
+            )
+            failure_notes = (
+                "فشلت عملية إنشاء الإجابة." if answer_language == "Arabic" else "Generation failed."
+            )
             return {
-                "answer": "We were unable to generate a response at this time. Please try again shortly.",
-                "verification": {"rating": 0, "passed": False, "missing_refs": [], "notes": "Generation failed."},
+                "answer": failure_answer,
+                "verification": {"rating": 0, "passed": False, "missing_refs": [], "notes": failure_notes},
                 "attempts_made": 0,
                 "self_refine_converged": False,
             }
 
         if not self._HAS_DIGIT_RE.search(answer):
             print("⏱️   ├─ Verification: تخطّي (الإجابة بدون أرقام)")
+            skip_notes = (
+                "لا توجد أرقام في الإجابة؛ تم تخطي التحقق."
+                if answer_language == "Arabic" else
+                "No numeric figures in the answer; verification skipped."
+            )
             verification = {
                 "rating": 8,
                 "passed": True,
                 "missing_refs": [],
-                "notes": "No numeric figures in the answer; verification skipped.",
+                "notes": skip_notes,
             }
             return {
                 "answer": self._strip_json_artifacts(answer),
@@ -936,7 +982,9 @@ Provide the corrected answer now.""")
 
         for round_idx in range(total_rounds):
             _t = time.time()
-            verification = self.verifier.verify_answer(query, answer, source_texts)
+            verification = self.verifier.verify_answer(
+                query, answer, source_texts, answer_language=answer_language
+            )
             print(f"⏱️   ├─ Verification round {round_idx + 1}: {time.time() - _t:.2f}s (rating={verification['rating']}, passed={verification['passed']})")
             attempts.append({"answer": answer, "verification": verification})
 
@@ -986,20 +1034,33 @@ class FinancialDataExtractor:
             corpus_divisor=10,
         )
 
-    def extract_data_from_query(self, query: str, k: Optional[int] = None) -> pd.DataFrame:
-        k_max = k if k is not None else self.adaptive_depth.compute_k_max(self.vector_db)
-        print(f"📊 نافذة الاسترجاع لاستخراج بيانات الرسم البياني (k_max): {k_max}")
-
+    def extract_data_from_query(
+        self,
+        query: str,
+        k: Optional[int] = None,
+        docs: Optional[List[Any]] = None,
+    ) -> pd.DataFrame:
         improvement_query = self._is_improvement_percentage_query(query)
-        retrieval_query = "نسبة التحسّن البُعد المقاس" if improvement_query else query
-        retrieval_k = k_max
-        if improvement_query:
-            corpus_size = self.adaptive_depth.estimate_corpus_size(self.vector_db)
-            if corpus_size:
-                # A comparison chart needs every occurrence of this structured
-                # field, not just the nearest semantic matches.
-                retrieval_k = min(corpus_size, 100)
-        docs = self.vector_db.similarity_search(retrieval_query, k=retrieval_k)
+
+        if docs is not None and not improvement_query:
+            # Reuse the documents already vetted by CRAG for the main answer,
+            # instead of doing an independent (unfiltered) retrieval — this
+            # keeps the chart consistent with what the text answer actually
+            # found (or didn't find).
+            print(f"📊 استخدام {len(docs)} مستند تم فرزها مسبقاً (CRAG) لبناء الرسم البياني")
+        else:
+            k_max = k if k is not None else self.adaptive_depth.compute_k_max(self.vector_db)
+            print(f"📊 نافذة الاسترجاع لاستخراج بيانات الرسم البياني (k_max): {k_max}")
+
+            retrieval_query = "نسبة التحسّن البُعد المقاس" if improvement_query else query
+            retrieval_k = k_max
+            if improvement_query:
+                corpus_size = self.adaptive_depth.estimate_corpus_size(self.vector_db)
+                if corpus_size:
+                    # A comparison chart needs every occurrence of this structured
+                    # field, not just the nearest semantic matches.
+                    retrieval_k = min(corpus_size, 100)
+            docs = self.vector_db.similarity_search(retrieval_query, k=retrieval_k)
 
         if not docs:
             return pd.DataFrame()
@@ -1018,12 +1079,19 @@ class FinancialDataExtractor:
         ])
 
         extraction_prompt = ChatPromptTemplate.from_messages([
-            ("system", """Extract structured financial data. 
-            RULES: 
-            1. ONLY extract items relevant to the query. 
+            ("system", """Extract structured financial data that DIRECTLY answers the query's
+            specific topic/metric.
+            RULES:
+            1. Only extract items whose label/metric matches what the query is actually
+               asking about (e.g. if the query asks about "revenue"/"الإيرادات", only
+               extract rows that are actually revenue figures — not unrelated metrics
+               like costs, ratings, headcount, or KPIs that merely appear in the same
+               context).
             2. Each object MUST have: "label", "value", "currency", "suggestion".
-            3. "value" must be a CLEAN number. 
-            4. If no new/relevant data found, return empty list [].
+            3. "value" must be a CLEAN number.
+            4. If the Context does not contain data that actually matches the query's
+               requested metric/topic, return an empty list [] — do NOT substitute a
+               different metric just because it is present in the Context.
             5. Every returned row must represent the SAME metric and unit; never mix
                percentages, ratings, differences, and monetary amounts in one result.
             6. STRICT: NO markdown, ONLY JSON array."""),
@@ -1210,6 +1278,18 @@ class FinancialRAGAgent:
         "رسم دائري", "رسم خطي", "رسم بالأعمدة", "رسم اعمدة", "رسم مبعثر",
     ]
 
+    # Phrases that indicate the answer itself is reporting that no matching
+    # data was found. If the text answer says this, we should not show a
+    # chart that was built from a different, unrelated topic — that
+    # contradicts the answer and misleads the user.
+    NO_DATA_PHRASES = [
+        "لا توجد بيانات", "لا يوجد بيانات", "لم يتم العثور", "لا يمكن رسم",
+        "غير متوفرة في السياق", "غير متوفر في السياق", "لا تحتوي المستندات",
+        "no data", "no relevant data", "not available in the context",
+        "not found in the", "cannot be found in the", "unable to find",
+        "does not contain", "no information", "insufficient data",
+    ]
+
     FAST_MODEL = os.getenv("GROQ_FAST_MODEL", "llama-3.1-8b-instant")
     MAIN_MODEL = os.getenv("GROQ_MAIN_MODEL", "openai/gpt-oss-20b")
 
@@ -1379,7 +1459,10 @@ class FinancialRAGAgent:
 
             chart_future = None
             if needs_chart:
-                chart_future = executor.submit(self._build_chart, query)
+                # Reuse the same CRAG-graded documents as the text answer so
+                # the chart can never "find" data on a topic the answer
+                # itself said was missing.
+                chart_future = executor.submit(self._build_chart, query, relevant_docs)
 
             refine_result = answer_future.result()
             chart_data = chart_future.result() if chart_future is not None else None
@@ -1388,15 +1471,30 @@ class FinancialRAGAgent:
         answer = refine_result["answer"]
         verification = refine_result["verification"]
 
+        # If the text answer itself states that no matching data was found,
+        # never show a chart — it would necessarily be built from an
+        # unrelated topic and would contradict/mislead relative to the text.
+        if chart_data and self._answer_indicates_no_data(answer):
+            print("⚠️ الإجابة تفيد بعدم وجود بيانات مطابقة — سيتم إخفاء الرسم البياني لتفادي التناقض")
+            chart_data = None
+
         confidence = "High" if verification.get("rating", 0) >= 8 else "Medium" if verification.get("rating", 0) >= 5 else "Low"
 
+        answer_language = SelfRefiningAnswerEngine._response_language_for_query(query)
+
         if not refine_result["self_refine_converged"]:
-            answer += (
+            convergence_note = (
+                "\n\n---\n"
+                "**ملاحظة:** تعكس هذه الإجابة أفضل ما توصلنا إليه بعد عدة "
+                "جولات مراجعة، إلا أن بعض الأرقام لم يتم التحقق منها بالكامل "
+                "مقابل المستندات المصدر. يُرجى التعامل معها بالحذر المناسب."
+                if answer_language == "Arabic" else
                 "\n\n---\n"
                 "**Note:** This response reflects our best available answer after multiple "
                 "review passes, but some figures could not be fully verified against the "
                 "source documents. Please treat it with appropriate caution."
             )
+            answer += convergence_note
 
         return {
             "answer": answer,
@@ -1410,11 +1508,16 @@ class FinancialRAGAgent:
             "self_refine_converged": refine_result["self_refine_converged"],
         }
 
-    def _build_chart(self, query: str) -> Optional[Dict[str, Any]]:
+    @classmethod
+    def _answer_indicates_no_data(cls, answer: str) -> bool:
+        answer_lower = (answer or "").lower()
+        return any(phrase in answer_lower for phrase in cls.NO_DATA_PHRASES)
+
+    def _build_chart(self, query: str, relevant_docs: Optional[List[Any]] = None) -> Optional[Dict[str, Any]]:
         try:
             _chart_t0 = time.time()
             extractor = FinancialDataExtractor(self.vector_db, self.fast_llm)
-            df = extractor.extract_data_from_query(query)
+            df = extractor.extract_data_from_query(query, docs=relevant_docs)
             print(f"⏱️ Chart data extraction: {time.time() - _chart_t0:.2f}s")
             print(f"📊 DataFrame for visualization:\n{df.head()}")
 
