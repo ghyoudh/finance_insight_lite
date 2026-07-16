@@ -8,7 +8,7 @@ Injected via st.html() to avoid the st.markdown style-rendering bug.
 def get_css(lang: str = "en") -> str:
     direction = "rtl" if lang == "ar" else "ltr"
     text_align = "right" if lang == "ar" else "left"
-    footer_align = "flex-end" if lang == "ar" else "flex-start"
+    footer_justify = "flex-end" if lang == "ar" else "flex-start"
     footer_identity_direction = "row-reverse" if lang == "ar" else "row"
 
     heading_font = "'IBM Plex Sans Arabic', sans-serif" if lang == "ar" else "'Fraunces', serif"
@@ -314,12 +314,12 @@ div[data-testid="stElementContainer"]:has(> .msg-bot-anchor) {{
 div[data-testid="stChatMessage"] {{
     display: flex !important;
     direction: ltr !important;
-    align-items: flex-end;
-    gap: 0.55rem;
+    align-items: flex-start;
+    gap: 0.7rem;
     width: fit-content;
-    max-width: 68%;
-    padding: 0.75rem 1rem;
-    margin-bottom: 0.7rem;
+    max-width: 74%;
+    padding: 0.85rem 1rem;
+    margin-bottom: 0.85rem;
     position: relative;
     animation: turnIn 0.35s ease-out;
 }}
@@ -331,18 +331,78 @@ div[data-testid="stChatMessage"] {{
     div[data-testid="stChatMessage"] {{ animation: none; }}
 }}
 @media (max-width: 720px) {{
-    div[data-testid="stChatMessage"] {{ max-width: 86%; }}
+    div[data-testid="stChatMessage"] {{
+        max-width: 94%;
+        padding: 0.78rem 0.82rem;
+    }}
 }}
 div[data-testid="stChatMessage"] img {{
-    width: 32px;
-    height: 32px;
+    width: 34px;
+    height: 34px;
     flex-shrink: 0;
     border-radius: 50%;
-    filter: grayscale(0.3) brightness(0.9);
+    filter: grayscale(0.18) brightness(0.98);
 }}
 div[data-testid="stChatMessage"] div[data-testid="stChatMessageContent"] {{
     text-align: {text_align} !important;
     direction: {direction} !important;
+    width: 100%;
+    min-width: 0;
+    overflow-wrap: anywhere;
+}}
+
+div[data-testid="stChatMessage"] div[data-testid="stChatMessageContent"] p {{
+    margin: 0 0 0.65rem 0;
+    color: var(--text-primary);
+    font-size: 0.98rem;
+    line-height: 1.74;
+}}
+div[data-testid="stChatMessage"] div[data-testid="stChatMessageContent"] p:last-child {{
+    margin-bottom: 0;
+}}
+div[data-testid="stChatMessage"] div[data-testid="stChatMessageContent"] strong {{
+    color: var(--text-primary);
+    font-weight: 700;
+}}
+div[data-testid="stChatMessage"] div[data-testid="stChatMessageContent"] ul,
+div[data-testid="stChatMessage"] div[data-testid="stChatMessageContent"] ol {{
+    margin: 0.35rem 0 0.72rem;
+    padding-inline-start: 1.25rem;
+}}
+div[data-testid="stChatMessage"] div[data-testid="stChatMessageContent"] li {{
+    margin: 0.22rem 0;
+    line-height: 1.68;
+}}
+div[data-testid="stChatMessage"] div[data-testid="stChatMessageContent"] hr {{
+    margin: 1rem 0 !important;
+}}
+div[data-testid="stChatMessage"] div[data-testid="stChatMessageContent"] code {{
+    background: rgba(96, 165, 250, 0.1);
+    border: 1px solid rgba(96, 165, 250, 0.14);
+    border-radius: 5px;
+    padding: 0.08rem 0.32rem;
+    color: var(--brass-light);
+    font-family: var(--font-mono);
+    font-size: 0.88em;
+}}
+div[data-testid="stChatMessage"] div[data-testid="stChatMessageContent"] table {{
+    width: 100%;
+    margin: 0.8rem 0;
+    border-collapse: collapse;
+    overflow: hidden;
+    border-radius: 8px;
+    font-size: 0.9rem;
+}}
+div[data-testid="stChatMessage"] div[data-testid="stChatMessageContent"] th,
+div[data-testid="stChatMessage"] div[data-testid="stChatMessageContent"] td {{
+    border: 1px solid var(--card-border);
+    padding: 0.55rem 0.68rem;
+    text-align: {text_align};
+}}
+div[data-testid="stChatMessage"] div[data-testid="stChatMessageContent"] th {{
+    background: rgba(96, 165, 250, 0.1);
+    color: var(--text-primary);
+    font-weight: 700;
 }}
 
 /* رسالة اليوزر */
@@ -362,24 +422,47 @@ div[data-testid="stChatMessage"]:has(div[aria-label="Chat message from assistant
     margin-left: {bot_margin_l} !important;
     margin-right: {bot_margin_r} !important;
     border-radius: {bot_radius} !important;
-    background: var(--chat-bot-bg) !important;
-    border: 1px solid var(--card-border) !important;
+    background:
+        linear-gradient(180deg, rgba(96, 165, 250, 0.045), rgba(96, 165, 250, 0)),
+        var(--chat-bot-bg) !important;
+    border: 1px solid rgba(96, 165, 250, 0.18) !important;
     border-{"left" if bot_side == "right" else "right"}: 3px solid var(--line-600) !important;
+    box-shadow: 0 14px 34px rgba(0, 0, 0, 0.18);
 }}
 
 div[data-testid="stChatInput"] {{
-    border-color: var(--card-border) !important;
-    border-radius: 10px !important;
-    background: var(--ink-850) !important;
-    transition: var(--transition);
+    border: 1px solid rgba(96, 165, 250, 0.18) !important;
+    border-radius: 8px !important;
+    background:
+        linear-gradient(180deg, rgba(96, 165, 250, 0.05), rgba(96, 165, 250, 0)),
+        var(--ink-850) !important;
+    transition: border-color 0.18s ease, box-shadow 0.18s ease, background 0.18s ease;
+    box-shadow: 0 12px 30px rgba(0, 0, 0, 0.22);
 }}
 div[data-testid="stChatInput"]:focus-within {{
     border-color: var(--brass) !important;
-    box-shadow: 0 0 0 1px var(--brass-ring) !important;
+    box-shadow: 0 0 0 1px var(--brass-ring), 0 16px 38px rgba(0, 0, 0, 0.28) !important;
 }}
 div[data-testid="stChatInput"] textarea {{
     color: var(--text-primary) !important;
     direction: {direction};
+    font-family: var(--font-body) !important;
+    font-size: 0.98rem !important;
+    line-height: 1.55 !important;
+    min-height: 2.75rem !important;
+    caret-color: var(--brass-light);
+}}
+div[data-testid="stChatInput"] textarea::placeholder {{
+    color: var(--text-muted) !important;
+    opacity: 1;
+}}
+div[data-testid="stChatInput"] button {{
+    border-radius: 6px !important;
+    transition: background 0.18s ease, transform 0.18s ease;
+}}
+div[data-testid="stChatInput"] button:hover {{
+    background: rgba(96, 165, 250, 0.14) !important;
+    transform: translateY(-1px);
 }}
 .chat-input-legal {{
     position: fixed;
@@ -552,7 +635,6 @@ div[data-testid="stElementContainer"]:has(.menu-bar-anchor) + div[data-testid="s
 .app-footer {{
     display: flex;
     flex-direction: column;
-    align-items: {footer_align};
     gap: 0.9rem;
     width: 100%;
     direction: {direction};
@@ -567,8 +649,10 @@ div[data-testid="stElementContainer"]:has(.menu-bar-anchor) + div[data-testid="s
 }}
 .footer-main {{
     display: flex;
-    justify-content: {footer_align};
+    justify-content: {footer_justify};
     width: 100%;
+    direction: ltr;
+    text-align: {text_align};
 }}
 .footer-identity {{
     display: flex;
@@ -576,6 +660,7 @@ div[data-testid="stElementContainer"]:has(.menu-bar-anchor) + div[data-testid="s
     align-items: center;
     gap: 0.85rem;
     max-width: 620px;
+    direction: ltr;
 }}
 .footer-logo {{
     display: block;
@@ -590,6 +675,7 @@ div[data-testid="stElementContainer"]:has(.menu-bar-anchor) + div[data-testid="s
     flex-direction: column;
     gap: 0.18rem;
     max-width: 560px;
+    direction: {direction};
     text-align: {text_align};
 }}
 .footer-title {{
@@ -611,10 +697,11 @@ div[data-testid="stElementContainer"]:has(.menu-bar-anchor) + div[data-testid="s
 }}
 @media (max-width: 640px) {{
     .app-footer {{
-        align-items: {footer_align};
+        text-align: {text_align};
     }}
     .footer-main {{
-        justify-content: {footer_align};
+        justify-content: {footer_justify};
+        text-align: {text_align};
     }}
 }}
 

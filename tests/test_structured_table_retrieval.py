@@ -38,6 +38,24 @@ class FakeLLM:
         return self
 
 
+class CapturingLLM:
+    def __init__(self, content="Captured response."):
+        self.content = content
+        self.last_messages = None
+
+    def with_structured_output(self, _schema):
+        return self
+
+    def invoke(self, messages):
+        self.last_messages = messages
+
+        class Response:
+            def __init__(self, content):
+                self.content = content
+
+        return Response(self.content)
+
+
 class StructuredTableRetrievalTests(unittest.TestCase):
     def test_csv_loader_emits_one_document_per_row_with_metadata(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -157,6 +175,35 @@ class StructuredTableRetrievalTests(unittest.TestCase):
         self.assertIn("Open pipeline is 165,000 SAR.", cleaned)
         self.assertNotIn("DEAL-206 duplicate", cleaned)
         self.assertIn("The figure 25,000 was not found in the provided data.", cleaned)
+
+    def test_english_query_sets_english_response_language_despite_arabic_context(self):
+        llm = CapturingLLM()
+        engine = SelfRefiningAnswerEngine(llm)
+
+        engine._generate_initial(
+            query="what is the net income?",
+            context="الحقائق: صافي الدخل هو 109,520 مليون ريال.",
+            chat_history=[{"question": "ما هو صافي الدخل؟", "answer": "الإجابة السابقة بالعربية."}],
+        )
+
+        prompt_text = "\n".join(str(message.content) for message in llm.last_messages)
+        self.assertIn("TARGET RESPONSE LANGUAGE: English", prompt_text)
+        self.assertIn("what is the net income?", prompt_text)
+
+    def test_refinement_uses_query_language_not_previous_answer_language(self):
+        llm = CapturingLLM()
+        engine = SelfRefiningAnswerEngine(llm)
+
+        engine._refine(
+            query="what is the net income?",
+            context="Net income was SAR 109,520 million.",
+            previous_answer="الحقائق: صافي الدخل هو 109,520 مليون ريال.",
+            verification={"rating": 5, "missing_refs": [], "notes": "Wrong language."},
+        )
+
+        prompt_text = "\n".join(str(message.content) for message in llm.last_messages)
+        self.assertIn("TARGET RESPONSE LANGUAGE: English", prompt_text)
+        self.assertIn("previous answer used a different language", prompt_text)
 
 
 if __name__ == "__main__":

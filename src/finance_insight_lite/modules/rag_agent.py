@@ -571,9 +571,12 @@ class SelfRefiningAnswerEngine:
             ("system", """You are a Conversational Strategic Financial Advisor.
 
 ### LANGUAGE:
-- Respond in the same language the user asked the question in (Arabic
-  question -> Arabic answer, English question -> English answer). If the
-  question is mixed, prefer clarity over strict language matching.
+- TARGET RESPONSE LANGUAGE: {answer_language}.
+- Write the entire final answer in the TARGET RESPONSE LANGUAGE, including
+  headings, labels, notes, and fallback statements.
+- The UI language, retrieved Context language, and Chat History language must
+  not override this target. Use Chat History only for meaning and continuity,
+  not as a language-style instruction.
 
 ### CONVERSATIONAL LOGIC:
 - Use the provided 'Chat History' to understand the context of the current question.
@@ -675,8 +678,11 @@ unless the Context itself already contains the number you're citing.]
 previous answer that failed an accuracy check.
 
 ### LANGUAGE:
-- Keep the same language as the previous answer (match the user's question
-  language: Arabic question -> Arabic answer, English question -> English answer).
+- TARGET RESPONSE LANGUAGE: {answer_language}.
+- Write the corrected answer in the TARGET RESPONSE LANGUAGE, even if the
+  previous answer used a different language.
+- The previous answer, reviewer critique, Context, and Chat History must not
+  override this target language.
 
 ### GROUNDING RULES (apply these even while revising):
 - Do NOT state that one metric causes, explains, drives, or correlates with
@@ -805,8 +811,25 @@ Provide the corrected answer now.""")
 
         return cleaned if cleaned else text.strip()
 
+    @staticmethod
+    def _response_language_for_query(query: str) -> str:
+        """Return a stable response language target for the user's question."""
+        text = query or ""
+        arabic_chars = len(re.findall(r"[\u0600-\u06FF]", text))
+        latin_chars = len(re.findall(r"[A-Za-z]", text))
+
+        if arabic_chars and arabic_chars >= latin_chars:
+            return "Arabic"
+        return "English"
+
     def _generate_initial(self, query: str, context: str, chat_history: list) -> str:
-        formatted = self.answer_prompt.format_messages(query=query, context=context, chat_history=chat_history)
+        answer_language = self._response_language_for_query(query)
+        formatted = self.answer_prompt.format_messages(
+            query=query,
+            context=context,
+            chat_history=chat_history,
+            answer_language=answer_language,
+        )
         if self.rate_limiter is not None:
             combined_text = " ".join(str(m.content) for m in formatted)
             self.rate_limiter.wait_if_needed(
@@ -817,11 +840,13 @@ Provide the corrected answer now.""")
         return self._strip_json_artifacts(response.content.strip())
 
     def _refine(self, query: str, context: str, previous_answer: str, verification: Dict[str, Any]) -> str:
+        answer_language = self._response_language_for_query(query)
         missing_refs_text = ", ".join(verification.get("missing_refs") or []) or "None specified"
         formatted = self.refine_prompt.format_messages(
             query=query,
             context=context,
             previous_answer=previous_answer,
+            answer_language=answer_language,
             rating=verification.get("rating", 0),
             missing_refs=missing_refs_text,
             notes=verification.get("notes", ""),
