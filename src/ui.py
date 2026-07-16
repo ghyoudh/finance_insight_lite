@@ -55,9 +55,29 @@ def _toggle_lang():
     new = "ar" if st.session_state.lang == "en" else "en"
     set_lang(st, new)
 
+_LEGACY_ANSWER_NOTE_PATTERNS = (
+    re.compile(
+        r"\n*\s*---\s*\n\s*\*\*Note:\*\*\s*.*?appropriate caution\.?",
+        re.IGNORECASE | re.DOTALL,
+    ),
+    re.compile(
+        r"\n*\s*---\s*\n\s*\*\*ملاحظة:\*\*\s*.*?الحذر المناسب\.?",
+        re.DOTALL,
+    ),
+)
+
+def strip_legacy_answer_note(answer):
+    cleaned = answer or ""
+    for pattern in _LEGACY_ANSWER_NOTE_PATTERNS:
+        cleaned = pattern.sub("", cleaned)
+    return cleaned.strip()
+
 def build_llm_chat_history(chat_history, max_turns: int = 6):
     recent = chat_history[-max_turns:] if max_turns else chat_history
-    return [{"question": turn.get("question", ""), "answer": turn.get("answer", "")} for turn in recent]
+    return [
+        {"question": turn.get("question", ""), "answer": strip_legacy_answer_note(turn.get("answer", ""))}
+        for turn in recent
+    ]
 
 def process_uploaded_files(uploaded_files):
     if os.path.exists("./data/uploaded/"): shutil.rmtree("./data/uploaded")
@@ -94,7 +114,7 @@ def clear_chat_only():
     st.session_state.chat_history = []; chat_db.clear_session(session_id)
 
 def render_chat_turn(chat, idx):
-    answer = chat.get("answer", "") or ""
+    answer = strip_legacy_answer_note(chat.get("answer", ""))
     _ar = len(re.findall(r"[\u0600-\u06FF]", answer))
     _lt = len(re.findall(r"[A-Za-z]", answer))
     if _ar and _ar >= _lt:
@@ -198,10 +218,14 @@ def handle_question(question: str):
     if st.session_state.agent is None: return st.warning(t("upload_first_warning"))
     with st.spinner(t("thinking")):
         result = st.session_state.agent.process_query(question, chat_history=build_llm_chat_history(st.session_state.chat_history))
+    answer = strip_legacy_answer_note(result.get("answer"))
     entry = {
-        "question": question, "answer": result.get("answer"), "chart": result.get("chart"),
+        "question": question, "answer": answer, "chart": result.get("chart"),
         "source_pages": result.get("source_pages"), "confidence": result.get("confidence"),
         "relevant_docs_count": result.get("relevant_docs_count"), "verification": result.get("verification"),
+        "retrieved": answer,
+        "relevant": result.get("source_texts"),
+        "source_texts": result.get("source_texts"),
     }
     st.session_state.chat_history.append(entry)
     chat_db.save_entry(session_id, entry)

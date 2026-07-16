@@ -2,6 +2,7 @@ import os
 import re
 import time
 import threading
+import io
 from collections import deque
 from typing import List, Dict, Any, Optional, Literal
 from langchain_groq import ChatGroq
@@ -421,6 +422,14 @@ class NumberAttribution(BaseModel):
         description="True only if row_label_in_source is actually what the Question is asking "
                     "about — not merely a similarly-worded neighboring row/category/period."
     )
+    source_file_claimed: str = Field(
+        default="",
+        description="The source file the Answer claims this number/fact came from, or empty if no source file is claimed"
+    )
+    source_file_actual: str = Field(
+        default="",
+        description="The source file shown in the matching Source chunk for this number/fact, or empty if not found"
+    )
 
 
 class VerificationResult(BaseModel):
@@ -444,6 +453,180 @@ class VerificationResult(BaseModel):
                     "the prompt, describing the single most important issue (or the "
                     "equivalent of 'No issues found' if the answer is well supported)"
     )
+
+
+class ConsistencyCheck(BaseModel):
+    contradictions_found: bool = Field(
+        description="True if the answer makes two conflicting claims about the same entity"
+    )
+    contradiction_details: List[str] = Field(
+        default_factory=list,
+        description="For each contradiction: which entity, and the two conflicting claims made about it, quoted briefly"
+    )
+
+
+class AggregationIntent(BaseModel):
+    needs_aggregation: bool = Field(
+        description="True if the query requires totals, sums, differences, variances, net/profit, or similar arithmetic"
+    )
+    aggregation_type: Literal["sum", "difference", "variance_pct", "net", "none"] = Field(
+        default="none",
+        description="The primary arithmetic operation needed, or none"
+    )
+
+
+class ChartIntent(BaseModel):
+    wants_chart: bool = Field(
+        description="True if the user is explicitly or implicitly asking to see a visualization/chart/graph of the data, in any language"
+    )
+
+
+class ChartIntentDetector:
+    """
+    Detects whether a query asks for a rendered visualization, instead of
+    relying only on language-specific keyword matching.
+    """
+
+    def __init__(
+        self,
+        fast_llm,
+        rate_limiter: Optional["TPMRateLimiter"] = None,
+        fallback_keywords: Optional[List[str]] = None,
+    ):
+        self.fast_llm = fast_llm
+        self.rate_limiter = rate_limiter
+        self.fallback_keywords = fallback_keywords or []
+        self.structured_llm = fast_llm.with_structured_output(ChartIntent)
+        self.prompt = ChatPromptTemplate.from_messages([
+            ("system", """Decide if the user's query is asking to see a chart,
+graph, plot, or visual representation of data in ANY language, including
+Arabic, English, or mixed language.
+
+Mark wants_chart=true for explicit visual requests such as "draw me",
+"ارسم لي", "show a chart", "visualize", "قارن لي بيانياً", or requests to
+represent the answer as a graph/chart.
+
+Mark wants_chart=false for plain requests to compare, summarize, calculate,
+or show numbers when the user has not asked for a visual representation. The
+user must clearly want something to look at, not just numbers to read."""),
+            ("human", "Query: {query}\n\nDoes this need a chart?")
+        ])
+
+    def detect(self, query: str) -> bool:
+        messages = self.prompt.format_messages(query=query)
+        prompt_text = "\n".join(str(message.content) for message in messages)
+
+        if self.rate_limiter is not None:
+            self.rate_limiter.wait_if_needed(
+                TPMRateLimiter.estimate_tokens(prompt_text),
+                label="Chart Intent",
+            )
+
+        try:
+            result: ChartIntent = self.structured_llm.invoke(messages)
+            return bool(result.wants_chart)
+        except Exception as e:
+            print(f"⚠️ Chart intent detection error: {e} — falling back to keyword check")
+            query_lower = query.lower()
+            return any(keyword in query_lower for keyword in self.fallback_keywords)
+
+
+class AggregationIntentDetector:
+    """Detects whether deterministic arithmetic should be injected."""
+
+    FALLBACK_KEYWORDS = (
+        "total", "sum", "variance", "difference", "net", "profit", "loss",
+        "aggregate", "collected", "revenue leak",
+        "إجمالي", "اجمالي", "مجموع", "فرق", "فروقات", "تباين", "صافي",
+        "ربح", "خسارة", "محصل", "المحصلة",
+    )
+
+    def __init__(self, fast_llm, rate_limiter: Optional["TPMRateLimiter"] = None):
+        self.fast_llm = fast_llm
+        self.rate_limiter = rate_limiter
+        self.structured_llm = fast_llm.with_structured_output(AggregationIntent)
+        self.prompt = ChatPromptTemplate.from_messages([
+            ("system", """Decide if the user query requires arithmetic over
+multiple rows of financial data. Mark needs_aggregation=true for totals, sums,
+net profit/loss, differences, budget-vs-actual variance, bank statement totals,
+collected revenue totals, or similar calculations. Use any language, including
+Arabic and English.
+
+If the user only asks for a single already-stated fact, mark false."""),
+            ("human", "Query: {query}\n\nClassify the aggregation need.")
+        ])
+
+    def detect(self, query: str) -> AggregationIntent:
+        messages = self.prompt.format_messages(query=query)
+        prompt_text = "\n".join(str(message.content) for message in messages)
+
+        if self.rate_limiter is not None:
+            self.rate_limiter.wait_if_needed(
+                TPMRateLimiter.estimate_tokens(prompt_text),
+                label="Aggregation Intent",
+            )
+
+        try:
+            return self.structured_llm.invoke(messages)
+        except Exception as e:
+            print(f"⚠️ Aggregation intent detection error: {e} — falling back to keyword check")
+            query_lower = query.lower()
+            needs = any(keyword in query_lower for keyword in self.FALLBACK_KEYWORDS)
+            agg_type = "none"
+            if needs:
+                if any(kw in query_lower for kw in ["variance", "تباين", "فروقات"]):
+                    agg_type = "variance_pct"
+                elif any(kw in query_lower for kw in ["net", "profit", "loss", "صافي", "ربح", "خسارة"]):
+                    agg_type = "net"
+                elif any(kw in query_lower for kw in ["difference", "فرق"]):
+                    agg_type = "difference"
+                else:
+                    agg_type = "sum"
+            return AggregationIntent(needs_aggregation=needs, aggregation_type=agg_type)
+
+
+class ConsistencyChecker:
+    """Structured final-answer contradiction check."""
+
+    def __init__(self, fast_llm, rate_limiter: Optional["TPMRateLimiter"] = None):
+        self.fast_llm = fast_llm
+        self.rate_limiter = rate_limiter
+        self.structured_llm = fast_llm.with_structured_output(ConsistencyCheck)
+        self.prompt = ChatPromptTemplate.from_messages([
+            ("system", """You are checking a financial answer for internal
+self-contradictions. Look only for conflicts inside the Answer about the same
+entity identifier already present in the Context, such as invoice IDs, deal
+IDs, entry IDs, line items, or customer names. Examples: the same invoice is
+described as both matched and missing; the same deal is assigned two different
+statuses; the same line item is given two incompatible values without
+explanation.
+
+Return the structured result only."""),
+            ("human", """Question: {query}
+
+Context:
+{context}
+
+Answer:
+{answer}
+
+Check for contradictions now.""")
+        ])
+
+    def check(self, query: str, context: str, answer: str) -> ConsistencyCheck:
+        messages = self.prompt.format_messages(query=query, context=context, answer=answer)
+        prompt_text = "\n".join(str(message.content) for message in messages)
+        if self.rate_limiter is not None:
+            self.rate_limiter.wait_if_needed(
+                TPMRateLimiter.estimate_tokens(prompt_text),
+                label="Consistency Check",
+            )
+
+        try:
+            return self.structured_llm.invoke(messages)
+        except Exception as e:
+            print(f"⚠️ Consistency check error: {e} — assuming no contradictions")
+            return ConsistencyCheck(contradictions_found=False, contradiction_details=[])
 
 
 class SelfRAGVerifier:
@@ -476,17 +659,29 @@ STEP 1 — number_checks (do this FIRST, before deciding rating/passed):
 - List every distinct number/figure mentioned in the Answer.
 - For each one, find its row/label in the Sources and copy that label
   verbatim into row_label_in_source.
+- If the number appears in a VERIFIED_CALCULATIONS block, use
+  VERIFIED_CALCULATIONS as the row_label_in_source and treat that computed
+  value as authoritative.
 - Judge matches_question_intent honestly: it is True only if that row/label
   is actually what the Question asked about. A similarly-worded neighboring
   row/category/period is NOT a match, even if the number itself is real and
   present somewhere in the Sources.
+- Fill source_file_actual from the [Source: ...] label on the matching Source
+  chunk. If the Answer explicitly claims the number came from a named source
+  file (for example "bank statement", "ledger.csv", "budget file"), fill
+  source_file_claimed with that claimed source name. If the claim and actual
+  source conflict, matches_question_intent must be false.
 
 STEP 2 — rating/passed (derive these FROM step 1, don't decide independently):
 - rating >= 7 requires every number_check to have matches_question_intent=true
   and every number to be traceable to the Sources.
-- If ANY number_check has matches_question_intent=false, or any figure cannot
-  be found in the Sources at all, rating must be below 7 and passed must be
-  false — treat a mismatched-row number exactly like a fabricated number.
+- If ANY number_check has matches_question_intent=false, source_file_claimed
+  conflicts with source_file_actual, or any figure cannot be found in the
+  Sources at all, rating must be below 7 and passed must be false — treat a
+  mismatched-row/source number exactly like a fabricated number.
+- If a VERIFIED_CALCULATIONS block is present and the Answer gives a covered
+  total/sum/variance/net figure that differs from the verified value, rating
+  must be below 7 and passed must be false.
 - missing_refs must list concrete items, and when the issue is a mismatch
   (real number, wrong row/label), say so explicitly (e.g. "figure X is
   attributed to the wrong row/label in the source table") — not vague
@@ -511,6 +706,37 @@ Grade this answer now via the schema.""")
         if arabic_chars and arabic_chars >= latin_chars:
             return "Arabic"
         return "English"
+
+    @staticmethod
+    def _source_names_conflict(claimed_source: str, actual_source: str) -> bool:
+        claimed = claimed_source.strip().lower()
+        actual = actual_source.strip().lower()
+        if not claimed or not actual:
+            return False
+        if claimed in actual or actual in claimed:
+            return False
+
+        claimed_tokens = {
+            token for token in re.split(r"[^a-z0-9\u0600-\u06ff]+", claimed)
+            if token and token not in {"the", "file", "csv", "xlsx", "xls", "pdf"}
+        }
+        actual_tokens = {
+            token for token in re.split(r"[^a-z0-9\u0600-\u06ff]+", actual)
+            if token and token not in {"the", "file", "csv", "xlsx", "xls", "pdf"}
+        }
+        if claimed_tokens and claimed_tokens.issubset(actual_tokens):
+            return False
+
+        aliases = {
+            "bank statement": {"bank", "statement"},
+            "ledger": {"ledger"},
+            "budget": {"budget"},
+        }
+        for phrase, tokens in aliases.items():
+            if phrase in claimed and tokens.issubset(actual_tokens):
+                return False
+
+        return True
 
     def verify_answer(self, question: str, answer: str, sources: List[str],
                        answer_language: Optional[str] = None) -> Dict[str, Any]:
@@ -542,17 +768,27 @@ Grade this answer now via the schema.""")
             missing_refs = list(result.missing_refs)
 
             for check in result.number_checks:
+                claimed_source = str(check.source_file_claimed or "").strip().lower()
+                actual_source = str(check.source_file_actual or "").strip().lower()
+                source_mismatch = self._source_names_conflict(claimed_source, actual_source)
                 is_bad = (
                     not check.matches_question_intent
                     or check.row_label_in_source.strip().upper() == "NOT_FOUND_IN_SOURCES"
+                    or source_mismatch
                 )
                 if is_bad:
                     passed = False
                     rating = min(rating, 4)
-                    mismatch_note = (
-                        f"{check.number_in_answer} attributed to '{check.row_label_in_source}' "
-                        f"which does not match the question's intent"
-                    )
+                    if source_mismatch:
+                        mismatch_note = (
+                            f"{check.number_in_answer} claimed from source '{check.source_file_claimed}' "
+                            f"but matched source '{check.source_file_actual}'"
+                        )
+                    else:
+                        mismatch_note = (
+                            f"{check.number_in_answer} attributed to '{check.row_label_in_source}' "
+                            f"which does not match the question's intent"
+                        )
                     if mismatch_note not in missing_refs:
                         missing_refs.append(mismatch_note)
 
@@ -595,6 +831,7 @@ class SelfRefiningAnswerEngine:
         self.llm = llm
         self.rate_limiter = rate_limiter
         self.verifier = SelfRAGVerifier(verifier_llm or llm, rate_limiter=verifier_rate_limiter)
+        self.consistency_checker = ConsistencyChecker(verifier_llm or llm, rate_limiter=verifier_rate_limiter)
         self.max_refinement_attempts = max_refinement_attempts
         self.pass_threshold = pass_threshold
 
@@ -635,6 +872,18 @@ class SelfRefiningAnswerEngine:
 - NEVER invent budgets, percentages, currency amounts (SAR/USD/etc.),
   timelines, or staffing/headcount numbers unless that exact figure already
   appears in the Context.
+- If the Context contains a VERIFIED_CALCULATIONS block, you MUST use those
+  exact computed numbers for any covered total, sum, variance, difference,
+  net/profit/loss, or aggregate figure. Do not recompute, round differently,
+  flip signs, or alter those values based on raw rows.
+- If the Context contains a VERIFIED_ANOMALIES block, treat it as mandatory
+  evidence. Mention duplicate/revenue-leak warnings when relevant; never
+  silently merge, silently drop, or silently count flagged duplicate invoices
+  as normal revenue.
+- When Context chunks include [Source: ...] labels from more than one source
+  file, attribute each material fact to its correct source file by name
+  (for example, "per the bank statement" or "per the ledger") and never state
+  that a fact appears in a source it was not retrieved from.
 
 ### RESPONSE STRUCTURE — decide based on what the question actually asks:
 
@@ -700,7 +949,8 @@ unless the Context itself already contains the number you're citing.]
   Before using any number, double-check it is taken from the row/label that
   actually matches what the Question is asking about — not a neighboring row
   that merely looks similar. If the Question's target is ambiguous between
-  two similarly-named rows, briefly note the ambiguity rather than guessing."""),
+  two similarly-named rows, briefly note the ambiguity rather than guessing.
+{chart_response_instruction}"""),
             ("human", "Chat History: {chat_history}\n\nQuestion: {query}\n\nContext: {context}")
         ])
 
@@ -725,6 +975,11 @@ previous answer that failed an accuracy check.
   timelines, or staffing/headcount numbers that do not appear in the
   Context. Keep suggestions qualitative unless a number is already present
   in the Context.
+- If a VERIFIED_CALCULATIONS block appears in the Context, preserve those
+  exact values in the corrected answer. If a VERIFIED_ANOMALIES block appears,
+  preserve the mandatory anomaly warning where relevant.
+- Preserve correct [Source: ...] attribution. Do not move facts between the
+  ledger, bank statement, budget file, pipeline file, or any other source.
 
 ### REVISION RULES:
 1. You will be given your PREVIOUS ANSWER and a REVIEWER CRITIQUE of it.
@@ -760,7 +1015,8 @@ previous answer that failed an accuracy check.
 6. Never output JSON, code blocks, or any raw/structured data format —
    plain conversational text only.
 7. Never copy-paste raw records/rows from the Context verbatim. Summarize
-   with your own words; only quote the specific figures needed."""),
+   with your own words; only quote the specific figures needed.
+{chart_response_instruction}"""),
             ("human", """Question: {query}
 
 Context: {context}
@@ -853,13 +1109,26 @@ Provide the corrected answer now.""")
             return "Arabic"
         return "English"
 
-    def _generate_initial(self, query: str, context: str, chat_history: list) -> str:
+    @staticmethod
+    def _chart_response_instruction(chart_requested: bool) -> str:
+        if not chart_requested:
+            return ""
+        return (
+            "\n- **Chart requests**: The system is generating a chart separately "
+            "for this question. Do NOT describe how to build a chart in prose, "
+            "and do NOT add a Suggestions section telling the user to visualize "
+            "the data themselves. Answer the underlying question briefly, as if "
+            "the chart will appear directly below your text."
+        )
+
+    def _generate_initial(self, query: str, context: str, chat_history: list, chart_requested: bool = False) -> str:
         answer_language = self._response_language_for_query(query)
         formatted = self.answer_prompt.format_messages(
             query=query,
             context=context,
             chat_history=chat_history,
             answer_language=answer_language,
+            chart_response_instruction=self._chart_response_instruction(chart_requested),
         )
         if self.rate_limiter is not None:
             combined_text = " ".join(str(m.content) for m in formatted)
@@ -870,7 +1139,14 @@ Provide the corrected answer now.""")
         response = self.llm.invoke(formatted)
         return self._strip_json_artifacts(response.content.strip())
 
-    def _refine(self, query: str, context: str, previous_answer: str, verification: Dict[str, Any]) -> str:
+    def _refine(
+        self,
+        query: str,
+        context: str,
+        previous_answer: str,
+        verification: Dict[str, Any],
+        chart_requested: bool = False,
+    ) -> str:
         answer_language = self._response_language_for_query(query)
         missing_refs_text = ", ".join(verification.get("missing_refs") or []) or "None specified"
         formatted = self.refine_prompt.format_messages(
@@ -881,6 +1157,7 @@ Provide the corrected answer now.""")
             rating=verification.get("rating", 0),
             missing_refs=missing_refs_text,
             notes=verification.get("notes", ""),
+            chart_response_instruction=self._chart_response_instruction(chart_requested),
         )
         if self.rate_limiter is not None:
             combined_text = " ".join(str(m.content) for m in formatted)
@@ -933,12 +1210,19 @@ Provide the corrected answer now.""")
             return f"{cleaned}\n\n{replacement}"
         return replacement
 
-    def run(self, query: str, context: str, chat_history: list, source_texts: List[str]) -> Dict[str, Any]:
+    def run(
+        self,
+        query: str,
+        context: str,
+        chat_history: list,
+        source_texts: List[str],
+        chart_requested: bool = False,
+    ) -> Dict[str, Any]:
         answer_language = self._response_language_for_query(query)
 
         try:
             _t = time.time()
-            answer = self._generate_initial(query, context, chat_history)
+            answer = self._generate_initial(query, context, chat_history, chart_requested=chart_requested)
             print(f"⏱️   ├─ Initial Answer Generation: {time.time() - _t:.2f}s")
         except Exception as e:
             print(f"⚠️ Answer generation error: {e}")
@@ -997,7 +1281,13 @@ Provide the corrected answer now.""")
 
             try:
                 _t = time.time()
-                answer = self._refine(query, context, answer, verification)
+                answer = self._refine(
+                    query,
+                    context,
+                    answer,
+                    verification,
+                    chart_requested=chart_requested,
+                )
                 print(f"⏱️   ├─ Refinement round {round_idx + 1}: {time.time() - _t:.2f}s")
             except Exception as e:
                 print(f"⚠️ Refinement error on attempt {round_idx + 1}: {e}")
@@ -1010,6 +1300,28 @@ Provide the corrected answer now.""")
 
         if not converged:
             best_answer = self._remove_unverified_numbers(best_answer, best_verification)
+
+        consistency = self.consistency_checker.check(query, context, best_answer)
+        if consistency.contradictions_found:
+            details = "; ".join(consistency.contradiction_details) or "Internal contradiction found."
+            consistency_verification = {
+                "rating": min(best_verification.get("rating", 0), 4),
+                "passed": False,
+                "missing_refs": [f"Internal contradiction: {details}"],
+                "notes": "The answer contains conflicting claims about the same entity.",
+            }
+            try:
+                best_answer = self._refine(
+                    query,
+                    context,
+                    best_answer,
+                    consistency_verification,
+                    chart_requested=chart_requested,
+                )
+                best_verification = consistency_verification
+                converged = False
+            except Exception as e:
+                print(f"⚠️ Consistency refinement error: {e}")
 
         return {
             "answer": self._strip_json_artifacts(best_answer),
@@ -1193,6 +1505,91 @@ class FinancialDataExtractor:
 
         return rows
 
+
+class ChartDecision(BaseModel):
+    chart_type: Literal["bar", "line", "pie", "area"] = Field(
+        description="The single best chart type for this query and data"
+    )
+    reason: str = Field(max_length=150, description="One short reason for the choice")
+
+
+class ChartTypeSelector:
+    """
+    Decides the best chart type using both the user's question and the shape
+    of the actually extracted data.
+    """
+
+    def __init__(self, fast_llm, rate_limiter: Optional["TPMRateLimiter"] = None):
+        self.fast_llm = fast_llm
+        self.rate_limiter = rate_limiter
+        self.structured_llm = fast_llm.with_structured_output(ChartDecision)
+
+        self.prompt = ChatPromptTemplate.from_messages([
+            ("system", """You choose the best chart type for a financial data
+visualization. The question may be in Arabic or English.
+
+Choose exactly one of: bar, line, pie, area.
+
+Guidance:
+- line: the data represents a value changing over an ordered time axis
+  (months, quarters, years, dates) and the question cares about the trend/
+  trajectory over that time.
+- area: like line, but the question emphasizes cumulative volume or magnitude
+  over time rather than the trend shape itself.
+- pie: the data is a small number of categories (roughly 2–6) that are parts
+  of one meaningful whole, and the question asks about share/proportion/
+  breakdown/percentage of total.
+- bar: the default for comparing a metric across discrete categories
+  (departments, deals, invoices, line items) with no time ordering and no
+  whole-to-part relationship; this is the safe default when nothing else
+  clearly fits.
+
+Scatter plots are intentionally unavailable for now because the extracted data
+schema has one numeric value per label, not two independent numeric axes.
+
+Base your decision on BOTH the question's intent and the actual data preview
+given below. If the labels are clearly categorical names (not dates/periods)
+even though the question uses a word like "trend", data shape wins."""),
+            ("human", """Question: {query}
+
+Data preview (label -> value):
+{data_preview}
+
+Number of data points: {n_points}
+
+Choose the chart type now.""")
+        ])
+
+    def select(self, query: str, df: "pd.DataFrame") -> ChartDecision:
+        preview_rows = []
+        for _, row in df.head(50).iterrows():
+            label = row.get("label", "")
+            value = row.get("value", "")
+            preview_rows.append(f"- {label}: {value}")
+        preview = "\n".join(preview_rows)
+        messages = self.prompt.format_messages(
+            query=query,
+            data_preview=preview,
+            n_points=len(df),
+        )
+        prompt_text = "\n".join(str(message.content) for message in messages)
+
+        if self.rate_limiter is not None:
+            self.rate_limiter.wait_if_needed(
+                TPMRateLimiter.estimate_tokens(prompt_text),
+                label="Chart Type Selection",
+            )
+
+        try:
+            return self.structured_llm.invoke(messages)
+        except Exception as e:
+            print(f"⚠️ Chart type selection error: {e} — falling back to bar")
+            return ChartDecision(
+                chart_type="bar",
+                reason="selection_failed_safe_default",
+            )
+
+
 class ChartGenerator:
     """Generate Plotly charts with financial styling"""
 
@@ -1266,6 +1663,227 @@ class ChartGenerator:
         return fig
 
 
+class DeterministicContextAnalyzer:
+    """Computes arithmetic and tabular anomaly facts from retrieved rows."""
+
+    MONEY_COLUMNS = ("amount_sar", "budget_sar", "actual_sar")
+
+    def __init__(self, documents: List[Any]):
+        self.documents = documents
+        self.frames = self._documents_to_frames(documents)
+
+    @staticmethod
+    def _source_file(doc) -> str:
+        metadata = doc.metadata or {}
+        return str(metadata.get("source_file") or metadata.get("source") or "unknown")
+
+    @staticmethod
+    def _clean_value(value: Any) -> Any:
+        if pd.isna(value):
+            return None
+        if isinstance(value, (int, float)):
+            return value
+        text = str(value).strip()
+        if text == "" or text.lower() in {"nan", "none", "null"}:
+            return None
+        numeric_candidate = text.replace(",", "").replace("SAR", "").replace("sar", "").strip()
+        try:
+            if re.fullmatch(r"-?\d+(?:\.\d+)?", numeric_candidate):
+                number = float(numeric_candidate)
+                return int(number) if number.is_integer() else number
+        except Exception:
+            pass
+        return text
+
+    @classmethod
+    def _parse_row_sentence(cls, text: str) -> Optional[Dict[str, Any]]:
+        row_text = text.splitlines()[-1] if "\n" in text else text
+        if " | " not in row_text or ":" not in row_text:
+            return None
+
+        row: Dict[str, Any] = {}
+        for part in row_text.split(" | "):
+            if ":" not in part:
+                continue
+            key, value = part.split(":", 1)
+            key = key.strip()
+            if not key:
+                continue
+            row[key] = cls._clean_value(value)
+        return row or None
+
+    @classmethod
+    def _parse_full_csv_blocks(cls, text: str) -> List[pd.DataFrame]:
+        frames: List[pd.DataFrame] = []
+        for match in re.finditer(r"CSV:\n(?P<csv>[\s\S]*?)(?=\n\nSource file:|\Z)", text):
+            csv_text = match.group("csv").strip()
+            if not csv_text:
+                continue
+            try:
+                frames.append(pd.read_csv(io.StringIO(csv_text)))
+            except Exception:
+                continue
+        return frames
+
+    @classmethod
+    def _documents_to_frames(cls, documents: List[Any]) -> List[tuple[str, pd.DataFrame]]:
+        grouped_rows: Dict[str, List[Dict[str, Any]]] = {}
+        frames: List[tuple[str, pd.DataFrame]] = []
+
+        for doc in documents:
+            source_file = cls._source_file(doc)
+            metadata = doc.metadata or {}
+            text = doc.page_content or ""
+
+            if metadata.get("table_full_context") or "CSV:\n" in text:
+                for frame in cls._parse_full_csv_blocks(text):
+                    if not frame.empty:
+                        frame = frame.copy()
+                        frame["__source_file"] = source_file
+                        frames.append((source_file, frame))
+
+            row = cls._parse_row_sentence(text)
+            if row:
+                row["__source_file"] = source_file
+                grouped_rows.setdefault(source_file, []).append(row)
+
+        for source_file, rows in grouped_rows.items():
+            if rows:
+                frames.append((source_file, pd.DataFrame(rows)))
+
+        return frames
+
+    @staticmethod
+    def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
+        normalized = df.copy()
+        normalized.columns = [str(col).strip() for col in normalized.columns]
+        for col in DeterministicContextAnalyzer.MONEY_COLUMNS:
+            if col in normalized.columns:
+                normalized[col] = pd.to_numeric(normalized[col], errors="coerce")
+        return normalized
+
+    @staticmethod
+    def _format_sar(value: float, signed: bool = False) -> str:
+        sign = "+" if signed and value > 0 else ""
+        if float(value).is_integer():
+            return f"{sign}{int(value):,} SAR"
+        return f"{sign}{value:,.2f} SAR"
+
+    def build_verified_context_block(self, query: str, aggregation_intent: Optional[AggregationIntent]) -> str:
+        sections: List[str] = []
+
+        calculations = self._build_calculations(query, aggregation_intent)
+        if calculations:
+            sections.append(
+                "VERIFIED_CALCULATIONS (computed by code; use these exact numbers, do not recompute or alter them):\n"
+                + "\n".join(f"- {line}" for line in calculations)
+            )
+
+        anomalies = self._build_anomalies(query)
+        if anomalies:
+            sections.append(
+                "VERIFIED_ANOMALIES (mandatory to mention when relevant; do not auto-merge or drop these rows):\n"
+                + "\n".join(f"- {line}" for line in anomalies)
+            )
+
+        return "\n\n".join(sections)
+
+    def _build_calculations(self, query: str, aggregation_intent: Optional[AggregationIntent]) -> List[str]:
+        query_lower = FinancialDataExtractor._normalize_arabic(query.lower())
+        explicit_need = bool(aggregation_intent and aggregation_intent.needs_aggregation)
+        if not explicit_need and not any(
+            keyword in query_lower
+            for keyword in AggregationIntentDetector.FALLBACK_KEYWORDS
+        ):
+            return []
+
+        lines: List[str] = []
+        for source_file, frame in self.frames:
+            df = self._normalize_columns(frame)
+
+            if {"type", "budget_sar", "actual_sar"}.issubset(df.columns):
+                type_series = df["type"].astype(str).str.lower()
+                expenses = df[type_series == "expense"]
+                revenue = df[type_series == "revenue"]
+                if not expenses.empty:
+                    budget_expenses = float(expenses["budget_sar"].sum())
+                    actual_expenses = float(expenses["actual_sar"].sum())
+                    lines.extend([
+                        f"Total budgeted expenses ({source_file}): {self._format_sar(budget_expenses)}",
+                        f"Total actual expenses ({source_file}): {self._format_sar(actual_expenses)}",
+                    ])
+                if not revenue.empty:
+                    budget_revenue = float(revenue["budget_sar"].sum())
+                    actual_revenue = float(revenue["actual_sar"].sum())
+                    lines.extend([
+                        f"Total budgeted revenue ({source_file}): {self._format_sar(budget_revenue)}",
+                        f"Total actual revenue ({source_file}): {self._format_sar(actual_revenue)}",
+                    ])
+                    if not expenses.empty:
+                        lines.extend([
+                            f"Budgeted net profit ({source_file}): {self._format_sar(budget_revenue - budget_expenses, signed=True)}",
+                            f"Actual net profit ({source_file}): {self._format_sar(actual_revenue - actual_expenses, signed=True)}",
+                        ])
+
+            if "amount_sar" in df.columns:
+                amount_total = float(df["amount_sar"].sum())
+                source_lower = source_file.lower()
+                if "bank" in source_lower or "statement" in source_lower:
+                    lines.append(f"Bank statement total ({source_file}): {self._format_sar(amount_total)}")
+                elif "invoice" in query_lower or "revenue" in query_lower or "صفقات" in query_lower or "ايراد" in query_lower or "إيراد" in query:
+                    if "record_type" in df.columns:
+                        invoices = df[df["record_type"].astype(str).str.lower() == "invoice"]
+                        pipeline = df[df["record_type"].astype(str).str.lower() == "pipeline"]
+                        if not invoices.empty:
+                            lines.append(
+                                f"Invoice amount total before duplicate review ({source_file}): "
+                                f"{self._format_sar(float(invoices['amount_sar'].sum()))}"
+                            )
+                        if not pipeline.empty:
+                            stage_totals = pipeline.groupby("stage", dropna=True)["amount_sar"].sum()
+                            for stage, value in stage_totals.items():
+                                lines.append(f"Pipeline stage total - {stage} ({source_file}): {self._format_sar(float(value))}")
+                    else:
+                        lines.append(f"Amount total ({source_file}): {self._format_sar(amount_total)}")
+
+        return lines
+
+    def _build_anomalies(self, query: str) -> List[str]:
+        query_lower = FinancialDataExtractor._normalize_arabic(query.lower())
+        revenue_query = any(
+            keyword in query_lower
+            for keyword in ["invoice", "billing", "revenue", "collection", "فاتورة", "فواتير", "ايراد", "إيراد", "تحصيل", "صفقات"]
+        )
+        if not revenue_query:
+            return []
+
+        lines: List[str] = []
+        for source_file, frame in self.frames:
+            df = self._normalize_columns(frame)
+            if not {"customer", "amount_sar"}.issubset(df.columns):
+                continue
+
+            invoice_df = df.copy()
+            if "record_type" in invoice_df.columns:
+                invoice_df = invoice_df[invoice_df["record_type"].astype(str).str.lower() == "invoice"]
+            if invoice_df.empty:
+                continue
+
+            suspects = invoice_df[invoice_df.duplicated(subset=["customer", "amount_sar"], keep=False)]
+            if suspects.empty:
+                continue
+
+            for (_, amount), group in suspects.groupby(["customer", "amount_sar"], dropna=False):
+                ids = ", ".join(str(v) for v in group.get("id", pd.Series(dtype=str)).dropna().tolist())
+                lines.append(
+                    f"Potential duplicate invoice in {source_file}: {ids} have the same customer "
+                    f"({group.iloc[0]['customer']}) and amount ({self._format_sar(float(amount))}); "
+                    "verify before counting both as separate revenue."
+                )
+
+        return lines
+
+
 # ============================================================================
 # 4. OPTIMIZED Agentic RAG - Fast & Efficient
 # ============================================================================
@@ -1276,7 +1894,20 @@ class FinancialRAGAgent:
         "chart", "visualiz", "plot", "graph", "draw", "pie", "bar", "line", "trend",
         "رسم بياني", "مخطط", "تمثيل بياني", "تصوير بياني", "تصور بياني",
         "رسم دائري", "رسم خطي", "رسم بالأعمدة", "رسم اعمدة", "رسم مبعثر",
+        "ارسم", "إرسم", "اعرض بيانياً", "بيانياً", "بياني", "تصور",
     ]
+    TIME_LABEL_MARKERS = (
+        "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "sept",
+        "oct", "nov", "dec", "quarter", "qtr", "month", "year", "fy",
+        "يناير", "فبراير", "مارس", "ابريل", "أبريل", "مايو", "يونيو", "يوليو",
+        "اغسطس", "أغسطس", "سبتمبر", "اكتوبر", "أكتوبر", "نوفمبر", "ديسمبر",
+        "الربع", "ربع", "شهر", "سنة", "سنوي",
+    )
+    PIE_INTENT_MARKERS = (
+        "share", "proportion", "breakdown", "distribution", "percentage",
+        "percent", "of total", "split", "composition", "mix",
+        "حصة", "نسبة", "نسب", "توزيع", "تفصيل", "تقسيم", "مكونات",
+    )
 
     # Phrases that indicate the answer itself is reporting that no matching
     # data was found. If the text answer says this, we should not show a
@@ -1401,40 +2032,71 @@ class FinancialRAGAgent:
 
         relevant_docs = routed["documents"]
 
+        def _source_file(doc) -> str:
+            metadata = doc.metadata or {}
+            return str(metadata.get("source_file") or metadata.get("source") or "unknown")
+
         def _context_label(doc) -> str:
-            if doc.metadata.get("table_full_context"):
-                return f"[Source {doc.metadata.get('source', 'table')}]"
-            if doc.metadata.get("page") is not None:
-                return f"[Page {doc.metadata.get('page')}]"
-            if doc.metadata.get("sheet_name"):
-                return f"[Sheet {doc.metadata.get('sheet_name')}]"
-            return f"[Source {doc.metadata.get('source', 'document')}]"
+            metadata = doc.metadata or {}
+            source_file = _source_file(doc)
+            if metadata.get("table_full_context"):
+                return f"[Source: {source_file} | Full table]"
+            if metadata.get("page") is not None:
+                return f"[Source: {source_file} | Page {metadata.get('page')}]"
+            if metadata.get("sheet_name"):
+                return f"[Source: {source_file} | Sheet: {metadata.get('sheet_name')}]"
+            row = metadata.get("row")
+            if row is not None:
+                return f"[Source: {source_file} | Row {row}]"
+            return f"[Source: {source_file}]"
 
         context = "\n\n".join([
             f"{_context_label(doc)}\n{doc.page_content}"
             for doc in relevant_docs
         ])
 
+        aggregation_detector = AggregationIntentDetector(
+            self.fast_llm,
+            rate_limiter=self._fast_model_limiter,
+        )
+        aggregation_intent = aggregation_detector.detect(query)
+
+        deterministic_block = DeterministicContextAnalyzer(
+            relevant_docs
+        ).build_verified_context_block(query, aggregation_intent)
+        if deterministic_block:
+            context = f"{deterministic_block}\n\n{context}"
+            print(f"🧮 Injected deterministic context block:\n{deterministic_block}")
+
       
         print(f"📄 Context المرسل للموديل ({len(context)} حرف من {len(relevant_docs)} مستند):")
         print(f"   {context[:300]}{'...' if len(context) > 300 else ''}")
 
         def _source_label(doc) -> Optional[str]:
-            if doc.metadata.get("table_full_context"):
-                return str(doc.metadata.get("source"))
-            page = doc.metadata.get('page')
+            metadata = doc.metadata or {}
+            source_file = _source_file(doc)
+            if metadata.get("table_full_context"):
+                return source_file
+            page = metadata.get('page')
             if page is not None:
-                return str(page)
-            sheet = doc.metadata.get('sheet_name')
+                return f"{source_file} p.{page}"
+            sheet = metadata.get('sheet_name')
             if sheet:
-                return f"Sheet: {sheet}"
-            return None
+                return f"{source_file} / Sheet: {sheet}"
+            return source_file
 
         source_pages = sorted({
             label
             for label in (_source_label(doc) for doc in relevant_docs)
             if label is not None
         })
+
+        labeled_source_texts = [
+            f"{_context_label(doc)}\n{doc.page_content}"
+            for doc in relevant_docs
+        ]
+        if deterministic_block:
+            labeled_source_texts.insert(0, deterministic_block)
 
         # ========================================================================
         # ========================================================================
@@ -1446,7 +2108,13 @@ class FinancialRAGAgent:
             verifier_rate_limiter=self._fast_model_limiter,  # منفصل تماماً لـ fast_llm
         )
 
-        needs_chart = self._needs_chart(query)
+        chart_detector = ChartIntentDetector(
+            self.fast_llm,
+            rate_limiter=self._fast_model_limiter,
+            fallback_keywords=self.VIZ_KEYWORDS,
+        )
+        needs_chart = chart_detector.detect(query)
+        print(f"📊 Chart intent detected: {needs_chart}")
 
         with ThreadPoolExecutor(max_workers=2) as executor:
             answer_future = executor.submit(
@@ -1454,7 +2122,8 @@ class FinancialRAGAgent:
                 query=query,
                 context=context,
                 chat_history=chat_history,
-                source_texts=[doc.page_content for doc in relevant_docs],
+                source_texts=labeled_source_texts,
+                chart_requested=needs_chart,
             )
 
             chart_future = None
@@ -1480,29 +2149,13 @@ class FinancialRAGAgent:
 
         confidence = "High" if verification.get("rating", 0) >= 8 else "Medium" if verification.get("rating", 0) >= 5 else "Low"
 
-        answer_language = SelfRefiningAnswerEngine._response_language_for_query(query)
-
-        if not refine_result["self_refine_converged"]:
-            convergence_note = (
-                "\n\n---\n"
-                "**ملاحظة:** تعكس هذه الإجابة أفضل ما توصلنا إليه بعد عدة "
-                "جولات مراجعة، إلا أن بعض الأرقام لم يتم التحقق منها بالكامل "
-                "مقابل المستندات المصدر. يُرجى التعامل معها بالحذر المناسب."
-                if answer_language == "Arabic" else
-                "\n\n---\n"
-                "**Note:** This response reflects our best available answer after multiple "
-                "review passes, but some figures could not be fully verified against the "
-                "source documents. Please treat it with appropriate caution."
-            )
-            answer += convergence_note
-
         return {
             "answer": answer,
             "source_pages": source_pages,
             "confidence": confidence,
             "verification": verification,
             "relevant_docs_count": len(relevant_docs),
-            "source_texts": [doc.page_content for doc in relevant_docs],
+            "source_texts": labeled_source_texts,
             "chart": chart_data,
             "self_refine_attempts": refine_result["attempts_made"],
             "self_refine_converged": refine_result["self_refine_converged"],
@@ -1524,7 +2177,29 @@ class FinancialRAGAgent:
             if df.empty:
                 return None
 
-            chart_type = self._suggest_chart_type(query, df)
+            try:
+                fast_llm = getattr(self, "fast_llm", None)
+                if fast_llm is None or not hasattr(fast_llm, "with_structured_output"):
+                    raise RuntimeError("fast_llm unavailable for chart type selection")
+
+                selector = ChartTypeSelector(
+                    fast_llm,
+                    rate_limiter=getattr(self, "_fast_model_limiter", None),
+                )
+                decision = selector.select(query, df)
+                chart_type = decision.chart_type
+                print(f"📊 Chart type chosen: {chart_type} ({decision.reason})")
+            except Exception as e:
+                chart_type = self._fallback_chart_type(query, df)
+                print(f"⚠️ Chart type selector unavailable: {e} — fallback chose {chart_type}")
+
+            validated_chart_type = self._validate_chart_type(chart_type, query, df)
+            if validated_chart_type != chart_type:
+                print(
+                    f"📊 Chart type adjusted: {chart_type} -> {validated_chart_type} "
+                    "(data shape guard)"
+                )
+                chart_type = validated_chart_type
 
             if chart_type == "bar":
                 fig = ChartGenerator.create_bar_chart(df, x="label", y="value", title=query)
@@ -1532,8 +2207,6 @@ class FinancialRAGAgent:
                 fig = ChartGenerator.create_line_chart(df, x="label", y="value", title=query)
             elif chart_type == "pie":
                 fig = ChartGenerator.create_pie_chart(df, names="label", values="value", title=query)
-            elif chart_type == "scatter":
-                fig = ChartGenerator.create_scatter_chart(df, x="label", y="value", title=query)
             else:
                 fig = ChartGenerator.create_area_chart(df, x="label", y="value", title=query)
 
@@ -1555,15 +2228,13 @@ class FinancialRAGAgent:
             print(f"⚠️ Chart generation error: {e}")
             return {"success": False, "error": str(e)}
 
-    def _suggest_chart_type(self, query: str, df: pd.DataFrame) -> str:
+    def _fallback_chart_type(self, query: str, df: pd.DataFrame) -> str:
         query_lower = query.lower()
 
         if FinancialDataExtractor._is_improvement_percentage_query(query):
             return "bar"
 
         # Honour an explicitly requested chart type before applying heuristics.
-        if any(kw in query_lower for kw in ["scatter", "مبعثر", "انتشار"]):
-            return "scatter"
         if any(kw in query_lower for kw in ["area chart", "area graph", "مساحي", "مساحة"]):
             return "area"
         if any(kw in query_lower for kw in ["pie", "دائري", "دائرة"]):
@@ -1585,6 +2256,63 @@ class FinancialRAGAgent:
             return "pie" if len(df) <= 6 else "bar"
 
         return "bar"
+
+    def _validate_chart_type(self, chart_type: str, query: str, df: pd.DataFrame) -> str:
+        if chart_type not in {"bar", "line", "pie", "area"}:
+            return self._fallback_chart_type(query, df)
+
+        if FinancialDataExtractor._is_improvement_percentage_query(query):
+            return "bar"
+
+        if chart_type in {"line", "area"} and not self._labels_look_time_ordered(df):
+            return "bar"
+
+        if chart_type == "pie" and not self._pie_chart_is_reasonable(query, df):
+            return "bar"
+
+        return chart_type
+
+    @classmethod
+    def _labels_look_time_ordered(cls, df: pd.DataFrame) -> bool:
+        if "label" not in df.columns:
+            return False
+
+        labels = [str(label).strip() for label in df["label"].dropna().tolist()]
+        if len(labels) < 2:
+            return False
+
+        matches = sum(1 for label in labels if cls._is_time_label(label))
+        required = max(2, int(np.ceil(len(labels) * 0.5)))
+        return matches >= required
+
+    @classmethod
+    def _is_time_label(cls, label: str) -> bool:
+        normalized = FinancialDataExtractor._normalize_arabic(label.lower())
+
+        if re.search(r"\b(?:q[1-4]|qtr\s*[1-4]|quarter\s*[1-4]|fy\s*\d{2,4})\b", normalized):
+            return True
+        if re.search(r"\b(?:19|20)\d{2}\b", normalized):
+            return True
+        if re.search(r"\b\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?\b", normalized):
+            return True
+
+        return any(marker in normalized for marker in cls.TIME_LABEL_MARKERS)
+
+    def _pie_chart_is_reasonable(self, query: str, df: pd.DataFrame) -> bool:
+        query_lower = FinancialDataExtractor._normalize_arabic(query.lower())
+        if not any(marker in query_lower for marker in self.PIE_INTENT_MARKERS):
+            return False
+        if len(df) < 2 or len(df) > 6:
+            return False
+        if "value" not in df.columns:
+            return False
+        if self._labels_look_time_ordered(df):
+            return False
+
+        values = pd.to_numeric(df["value"], errors="coerce")
+        if values.isna().any():
+            return False
+        return bool((values >= 0).all())
 
     @classmethod
     def _needs_chart(cls, query: str) -> bool:
