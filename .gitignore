@@ -68,3 +68,10 @@ coverage.xml
 # Locally generated document and vector-index caches
 data/cache/
 data/vector_cache/
+
+# Uploaded files and local data specific to Finance Insight Lite
+data/uploaded/
+data/vector_db/
+data/processed/
+database/
+src/chat_history.db
