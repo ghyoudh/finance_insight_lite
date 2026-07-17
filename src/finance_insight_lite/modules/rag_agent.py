@@ -2053,8 +2053,39 @@ class FinancialRAGAgent:
                 "chart": None
             }
 
-        routed = coordinator.route(query)
-        _lap("Retrieval TOTAL (expansion + hybrid search + CRAG grading)")
+        # ------------------------------------------------------------------
+        # PERF (latency only — zero change in logic/prompts/models):
+        # aggregation_intent و chart_intent يعتمدون فقط على نص السؤال، مو
+        # على المستندات المسترجعة من route(). سابقاً كانوا يشتغلون بالتسلسل
+        # بعد ما route() يخلص (يعني نداءين إضافيين ينتظرون على طول نداء
+        # الاسترجاع/CRAG الطويل). الحين الثلاثة (route + aggregation intent
+        # + chart intent) يشتغلون بالتوازي على threads منفصلة، فالوقت الكلي
+        # يصير أقرب لأطول عملية من الثلاث بدل مجموعهم. نفس البرومبتات،
+        # نفس الموديلات (fast_llm)، نفس rate limiter، ونفس نتيجة الحساب
+        # بالضبط — التغيير الوحيد هو وقت التنفيذ (wall-clock)، مو منطق
+        # القرار نفسه.
+        # ------------------------------------------------------------------
+        aggregation_detector = AggregationIntentDetector(
+            self.fast_llm,
+            rate_limiter=self._fast_model_limiter,
+        )
+        chart_detector = ChartIntentDetector(
+            self.fast_llm,
+            rate_limiter=self._fast_model_limiter,
+            fallback_keywords=self.VIZ_KEYWORDS,
+        )
+
+        with ThreadPoolExecutor(max_workers=3) as pre_executor:
+            route_future = pre_executor.submit(coordinator.route, query)
+            aggregation_future = pre_executor.submit(aggregation_detector.detect, query)
+            chart_future = pre_executor.submit(chart_detector.detect, query)
+
+            routed = route_future.result()
+            aggregation_intent = aggregation_future.result()
+            needs_chart = chart_future.result()
+
+        _lap("Retrieval TOTAL (expansion + hybrid search + CRAG grading) + intent detection (parallel)")
+        print(f"📊 Chart intent detected: {needs_chart}")
 
         if routed["instruction"].action == "REPORT_NOT_FOUND":
             return {
@@ -2090,12 +2121,6 @@ class FinancialRAGAgent:
             f"{_context_label(doc)}\n{doc.page_content}"
             for doc in relevant_docs
         ])
-
-        aggregation_detector = AggregationIntentDetector(
-            self.fast_llm,
-            rate_limiter=self._fast_model_limiter,
-        )
-        aggregation_intent = aggregation_detector.detect(query)
 
         deterministic_block = DeterministicContextAnalyzer(
             relevant_docs
@@ -2143,14 +2168,6 @@ class FinancialRAGAgent:
             rate_limiter=self._main_model_limiter,          # للموديل الرئيسي فقط (Generation + Refinement)
             verifier_rate_limiter=self._fast_model_limiter,  # منفصل تماماً لـ fast_llm
         )
-
-        chart_detector = ChartIntentDetector(
-            self.fast_llm,
-            rate_limiter=self._fast_model_limiter,
-            fallback_keywords=self.VIZ_KEYWORDS,
-        )
-        needs_chart = chart_detector.detect(query)
-        print(f"📊 Chart intent detected: {needs_chart}")
 
         with ThreadPoolExecutor(max_workers=2) as executor:
             answer_future = executor.submit(
