@@ -481,6 +481,23 @@ class ChartIntent(BaseModel):
     )
 
 
+def _has_chart_keyword(query: str, keywords: List[str]) -> bool:
+    query_lower = query.lower()
+    for keyword in keywords:
+        keyword_lower = keyword.lower()
+
+        if re.fullmatch(r"[a-z0-9]+", keyword_lower):
+            suffix = r"\w*" if keyword_lower.endswith("iz") else ""
+            if re.search(rf"\b{re.escape(keyword_lower)}{suffix}\b", query_lower):
+                return True
+            continue
+
+        if keyword_lower in query_lower:
+            return True
+
+    return False
+
+
 class ChartIntentDetector:
     """
     Detects whether a query asks for a rendered visualization, instead of
@@ -513,6 +530,9 @@ user must clearly want something to look at, not just numbers to read."""),
         ])
 
     def detect(self, query: str) -> bool:
+        if _has_chart_keyword(query, self.fallback_keywords):
+            return True
+
         messages = self.prompt.format_messages(query=query)
         prompt_text = "\n".join(str(message.content) for message in messages)
 
@@ -527,8 +547,7 @@ user must clearly want something to look at, not just numbers to read."""),
             return bool(result.wants_chart)
         except Exception as e:
             print(f"⚠️ Chart intent detection error: {e} — falling back to keyword check")
-            query_lower = query.lower()
-            return any(keyword in query_lower for keyword in self.fallback_keywords)
+            return _has_chart_keyword(query, self.fallback_keywords)
 
 
 class AggregationIntentDetector:
@@ -1217,6 +1236,7 @@ Provide the corrected answer now.""")
         chat_history: list,
         source_texts: List[str],
         chart_requested: bool = False,
+        use_self_rag: bool = True,
     ) -> Dict[str, Any]:
         answer_language = self._response_language_for_query(query)
 
@@ -1239,6 +1259,15 @@ Provide the corrected answer now.""")
                 "verification": {"rating": 0, "passed": False, "missing_refs": [], "notes": failure_notes},
                 "attempts_made": 0,
                 "self_refine_converged": False,
+            }
+
+        if not use_self_rag:
+            print("⏱️   ├─ Verification: skipped (use_self_rag=False)")
+            return {
+                "answer": self._strip_json_artifacts(answer),
+                "verification": None,
+                "attempts_made": 0,
+                "self_refine_converged": None,
             }
 
         if not self._HAS_DIGIT_RE.search(answer):
@@ -1960,7 +1989,13 @@ class FinancialRAGAgent:
             safety_margin=0.9,
         )
 
-    def process_query(self, query: str, chat_history: list = None) -> dict:
+    def process_query(
+        self,
+        query: str,
+        chat_history: list = None,
+        use_self_rag: bool = True,
+        max_retries: int = 1,
+    ) -> dict:
         _t0 = time.time()
 
         def _lap(label):
@@ -1971,6 +2006,7 @@ class FinancialRAGAgent:
 
         if chat_history is None:
             chat_history = []
+        max_retries = max(0, int(max_retries or 0))
 
         query_expander = QueryExpander(self.fast_llm) if self._hybrid_retriever else None
 
@@ -2103,7 +2139,7 @@ class FinancialRAGAgent:
         refine_engine = SelfRefiningAnswerEngine(
             self.llm,
             verifier_llm=self.fast_llm,
-            max_refinement_attempts=1, pass_threshold=7,
+            max_refinement_attempts=max_retries, pass_threshold=7,
             rate_limiter=self._main_model_limiter,          # للموديل الرئيسي فقط (Generation + Refinement)
             verifier_rate_limiter=self._fast_model_limiter,  # منفصل تماماً لـ fast_llm
         )
@@ -2124,6 +2160,7 @@ class FinancialRAGAgent:
                 chat_history=chat_history,
                 source_texts=labeled_source_texts,
                 chart_requested=needs_chart,
+                use_self_rag=use_self_rag,
             )
 
             chart_future = None
@@ -2147,7 +2184,10 @@ class FinancialRAGAgent:
             print("⚠️ الإجابة تفيد بعدم وجود بيانات مطابقة — سيتم إخفاء الرسم البياني لتفادي التناقض")
             chart_data = None
 
-        confidence = "High" if verification.get("rating", 0) >= 8 else "Medium" if verification.get("rating", 0) >= 5 else "Low"
+        if verification is None:
+            confidence = "N/A"
+        else:
+            confidence = "High" if verification.get("rating", 0) >= 8 else "Medium" if verification.get("rating", 0) >= 5 else "Low"
 
         return {
             "answer": answer,
@@ -2316,8 +2356,7 @@ class FinancialRAGAgent:
 
     @classmethod
     def _needs_chart(cls, query: str) -> bool:
-        query_lower = query.lower()
-        return any(keyword in query_lower for keyword in cls.VIZ_KEYWORDS)
+        return _has_chart_keyword(query, cls.VIZ_KEYWORDS)
 
     def _clean_dataframe(self, data: list) -> pd.DataFrame:
         cleaned = []
